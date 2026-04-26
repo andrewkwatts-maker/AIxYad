@@ -1,0 +1,1375 @@
+#!/usr/bin/env python3
+"""
+Automatica Agent Executor — Sandboxed action execution for external AI agents.
+
+Executes file operations, searches, and commands within a permission sandbox.
+Every action is checked against permissions before execution.
+Results include full file contents (for reads/searches) so the AI gets context.
+"""
+
+import fnmatch
+import json
+import os
+import re
+import shlex
+import subprocess
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+
+try:
+    from vision_actions import VisionActionHandler as _VisionActionHandler
+    _VISION_AVAILABLE = True
+except ImportError:
+    _VisionActionHandler = None  # type: ignore
+    _VISION_AVAILABLE = False
+
+try:
+    from view_actions import ViewActionHandler as _ViewActionHandler
+    _VIEW_AVAILABLE = True
+except ImportError:
+    _ViewActionHandler = None  # type: ignore
+    _VIEW_AVAILABLE = False
+
+# Vision action names for routing
+_VISION_ACTIONS = frozenset({
+    'screenshot', 'screenshot_window', 'screenshot_region',
+    'analyze_image', 'analyze_screenshot',
+    'ui_click', 'ui_type', 'ui_key_press', 'ui_scroll', 'ui_drag', 'ui_type_in_field',
+    'launch_app', 'get_window_info', 'list_windows', 'bring_window_to_front',
+    'get_screen_size', 'get_mouse_position',
+})
+
+# View action names for routing
+_VIEW_ACTIONS = frozenset({
+    'get_view', 'set_view', 'get_view_compact',
+    'get_related_content', 'get_related_keywords', 'set_related_keywords',
+    'replace_section', 'insert_line', 'remove_section', 'rename_symbol',
+})
+
+
+class AgentExecutor:
+    """Execute agent actions with permission checking and sandboxing."""
+
+    # Commands considered safe (prefix-matched)
+    SAFE_COMMAND_PREFIXES = [
+        "cmake", "ctest", "git status", "git diff", "git log",
+        "git add", "git commit", "git branch", "git checkout", "git stash",
+        "git tag", "git fetch", "git remote", "git show", "git blame",
+        "python", "pip", "npm", "node",
+        "cargo", "rustc", "go ", "dotnet", "make", "ninja",
+        # Windows shell - read-only and verification commands allowed
+        "powershell -command", "powershell -noprofile -command",
+        "cmd /c type", "cmd /c dir", "cmd /c echo", "cmd /c findstr",
+        "where ", "type ",
+    ]
+
+    # VCS commands that need explicit permission (dangerous by default)
+    VCS_PERMISSION_MAP = {
+        'git push':         'can_git_push',
+        'git reset --hard': 'can_git_reset',
+        'git reset':        'can_git_reset',
+        'git clean':        'can_git_clean',
+        'git rebase':       'can_git_rebase',
+        'git merge':        'can_git_merge',
+        'git branch -D':    'can_git_delete_branch',
+        'git branch -d':    'can_git_delete_branch',
+        'git checkout --':  'can_git_discard',
+        'git restore':      'can_git_discard',
+    }
+    VCS_PERMISSION_DEFAULTS = {
+        'can_git_push': False,
+        'can_git_reset': False,
+        'can_git_clean': False,
+        'can_git_rebase': False,
+        'can_git_merge': True,
+        'can_git_delete_branch': False,
+        'can_git_discard': False,
+    }
+
+    # Actions that always bypass permission checks
+    ALWAYS_ALLOWED = {"step_done", "need_help"}
+
+    # Map actions to their permission keys
+    PERMISSION_MAP = {
+        "read_file": "can_read_file",
+        "write_file": "can_write_file",
+        "edit_file": "can_edit_file",
+        "search": "can_search",
+        "list_files": "can_search",
+        "run_command": "can_run_command",
+        "run_script": "can_run_command",
+        "commit": "can_commit",
+        # Scanner actions (read-only)
+        "query_file_structure": "can_search",
+        "query_symbols": "can_search",
+        "query_files": "can_search",
+        "query_file_section": "can_search",
+        "query_wiki": "can_search",
+        "search_by_guid": "can_search",
+        "get_json_keys": "can_search",  # S3-W02
+        # DB query actions (read-only)
+        "query_tasks": "can_search",
+        "query_task_detail": "can_search",
+        "query_sprint": "can_search",
+        "query_sprint_summary": "can_search",
+        "query_history": "can_search",
+        "query_task_timeline": "can_search",
+        # DB mutation actions (write)
+        "update_task": "can_write_file",
+        "add_task": "can_write_file",
+        "reorder_tasks": "can_write_file",
+        "add_checklist_item": "can_write_file",
+        "check_item": "can_write_file",
+        "link_file_to_task": "can_write_file",
+        "log_file_modification": "can_write_file",
+        "create_subtask": "can_write_file",
+        "complete_subtask": "can_write_file",
+        "store_handoff": "can_write_file",
+        # Vision / UI automation actions
+        "screenshot":           "can_screenshot",
+        "screenshot_window":    "can_screenshot",
+        "screenshot_region":    "can_screenshot",
+        "analyze_image":        "can_screenshot",
+        "analyze_screenshot":   "can_screenshot",
+        "ui_click":             "can_ui_input",
+        "ui_type":              "can_ui_input",
+        "ui_key_press":         "can_ui_input",
+        "ui_scroll":            "can_ui_input",
+        "ui_drag":              "can_ui_input",
+        "ui_type_in_field":     "can_ui_input",
+        "launch_app":           "can_run_command",
+        "get_window_info":      "can_screenshot",
+        "list_windows":         "can_screenshot",
+        "bring_window_to_front":"can_screenshot",
+        "get_screen_size":      "can_screenshot",
+        "get_mouse_position":   "can_screenshot",
+        # Config/agent definition safe accessors (read-only from project DB)
+        "get_config":           "can_search",
+        "set_config":           "can_write_file",
+        "get_agent_def":        "can_search",
+        # View / file-tree / structured-edit actions
+        "get_view":             "can_search",
+        "set_view":             "can_search",
+        "get_view_compact":     "can_search",
+        "get_related_content":  "can_search",
+        "get_related_keywords": "can_search",
+        "set_related_keywords": "can_search",
+        "replace_section":      "can_edit_file",
+        "insert_line":          "can_edit_file",
+        "remove_section":       "can_edit_file",
+        "rename_symbol":        "can_edit_file",
+    }
+
+    def __init__(self, project_dir: Path, permissions: Dict[str, Any],
+                 action_filter: Optional[List[str]] = None,
+                 agent_slug: str = ''):
+        self.project_dir = Path(project_dir).resolve()
+        self.permissions = permissions
+        # E-16: optional whitelist of allowed action names for this agent
+        self._action_filter: Optional[frozenset] = (
+            frozenset(action_filter) if action_filter else None
+        )
+        self._agent_slug = agent_slug
+        self.action_log: List[Dict] = []
+        self._db_handler = None
+        self._session_actor = ''
+        self._session_id = ''
+        self._vision_handler = _VisionActionHandler() if _VISION_AVAILABLE else None
+        self._view_handler = None  # set via set_view_handler()
+
+    def set_db_handler(self, handler, actor: str = '', session_id: str = ''):
+        """Attach a DbActionHandler for DB action routing and action logging."""
+        self._db_handler = handler
+        self._session_actor = actor
+        self._session_id = session_id
+
+    def set_view_handler(self, handler):
+        """Attach a ViewActionHandler for hierarchical file-tree and structured-edit actions."""
+        self._view_handler = handler
+
+    def execute(self, response: dict) -> dict:
+        """Execute an action from AI response. Returns result dict with 'success' and 'message'."""
+        action = response.get("action", "")
+        params = response.get("params", {})
+        reasoning = response.get("reasoning", "")
+        timestamp = datetime.now().isoformat()
+
+        # Always-allowed actions pass through without checks
+        if action in self.ALWAYS_ALLOWED:
+            result = {"success": True, "message": f"ACTION: {action} — ACKNOWLEDGED"}
+            self._log(timestamp, action, params, result, reasoning)
+            return result
+
+        # E-16: agent action filter — reject actions not in agent's allowed list
+        if self._action_filter is not None and action not in self._action_filter:
+            result = {
+                "success": False,
+                "message": (
+                    f"ACTION: {action!r} not permitted for agent {self._agent_slug!r}. "
+                    f"Allowed: {sorted(self._action_filter)}"
+                ),
+            }
+            self._log(timestamp, action, params, result, reasoning)
+            return result
+
+        # Check permission
+        perm_key = self.PERMISSION_MAP.get(action)
+        if perm_key and not self.permissions.get(perm_key, True):
+            result = {
+                "success": False,
+                "message": f"ACTION: {action} — DENIED (permission '{perm_key}' is false)",
+            }
+            self._log(timestamp, action, params, result, reasoning)
+            return result
+
+        # Path safety check for file operations
+        if "path" in params:
+            path_check = self._check_path(params["path"])
+            if not path_check["safe"]:
+                result = {
+                    "success": False,
+                    "message": f"ACTION: {action} — DENIED ({path_check['reason']})",
+                }
+                self._log(timestamp, action, params, result, reasoning)
+                return result
+
+        # Route DB actions to DbActionHandler if available
+        _DB_ACTIONS = frozenset({
+            'query_tasks', 'query_task_detail', 'update_task', 'add_task',
+            'reorder_tasks', 'add_checklist_item', 'check_item',
+            'query_sprint', 'query_sprint_summary', 'query_history',
+            'query_task_timeline', 'link_file_to_task', 'log_file_modification',
+            # GUID code section tracking
+            'create_section', 'edit_section', 'find_section', 'get_section_history',
+            # Reservation and assignment
+            'reserve_task', 'release_task', 'assign_task', 'reserve_subtask',
+            # Safe delete / discard
+            'discard_task', 'restore_task', 'discard_file', 'restore_file',
+            'query_discarded_files', 'query_file_history',
+            # File locking
+            'lock_file', 'unlock_file', 'check_file_lock',
+            # Prompt logs
+            'query_prompt_logs',
+            # Config and agent-def access
+            'get_config', 'set_config', 'get_agent_def',
+            # Subtask management (complete_subtask and store_handoff handled by DbActionHandler)
+            'complete_subtask', 'store_handoff',
+        })
+        if action in _DB_ACTIONS:
+            if not self._db_handler:
+                result = {"success": False, "message": f"ACTION: {action} — NO DB CONNECTION (project_db not set)"}
+                self._log(timestamp, action, params, result, reasoning)
+                return result
+            try:
+                result = self._db_handler.handle(
+                    action, params,
+                    actor=self._session_actor, session_id=self._session_id,
+                )
+            except Exception as exc:
+                result = {"success": False, "message": f"ACTION: {action} — DB ERROR: {exc}"}
+            self._log(timestamp, action, params, result, reasoning)
+            return result
+
+        # Route vision/UI actions to VisionActionHandler
+        if action in _VISION_ACTIONS:
+            if not self._vision_handler:
+                result = {"success": False, "message": f"ACTION: {action} — vision_actions module not available"}
+                self._log(timestamp, action, params, result, reasoning)
+                return result
+            try:
+                result = self._vision_handler.handle(action, params)
+            except Exception as exc:
+                result = {"success": False, "message": f"ACTION: {action} — VISION ERROR: {exc}"}
+            self._log(timestamp, action, params, result, reasoning)
+            return result
+
+        # Route view/file-tree actions to ViewActionHandler
+        if action in _VIEW_ACTIONS:
+            if not self._view_handler:
+                result = {"success": False, "message": f"ACTION: {action} — view_actions module not available (project_db required)"}
+                self._log(timestamp, action, params, result, reasoning)
+                return result
+            try:
+                result = self._view_handler.handle(action, params, session_id=self._session_id)
+            except Exception as exc:
+                result = {"success": False, "message": f"ACTION: {action} — VIEW ERROR: {exc}"}
+            self._log(timestamp, action, params, result, reasoning)
+            return result
+
+        # Dispatch to handler
+        handler = getattr(self, f"_do_{action}", None)
+        if not handler:
+            result = {"success": False, "message": f"ACTION: {action} — UNKNOWN ACTION"}
+            self._log(timestamp, action, params, result, reasoning)
+            return result
+
+        try:
+            result = handler(params)
+        except Exception as exc:
+            result = {"success": False, "message": f"ACTION: {action} — ERROR: {exc}"}
+
+        # Log file write/edit actions to DB if handler is available
+        if self._db_handler and result.get("success") and action in ("write_file", "edit_file"):
+            try:
+                from automatica_db import log_action as _log_action
+                rel_path = params.get("path", "")
+                mod_action = "file_create" if action == "write_file" else "file_edit"
+                _log_action(
+                    self._db_handler.pdb, 'file', 0,
+                    self._session_actor or 'agent', mod_action,
+                    detail={'path': rel_path},
+                    session_id=self._session_id,
+                )
+            except Exception:
+                pass  # DB logging is best-effort
+
+        self._log(timestamp, action, params, result, reasoning)
+        return result
+
+    # ── File Operations ─────────────────────────────────────────────────
+
+    def _do_read_file(self, params: dict) -> dict:
+        """Read a file and return its full content."""
+        rel_path = params.get("path", "")
+        offset = params.get("offset", 0)
+        limit = params.get("limit", 0)
+
+        full_path = (self.project_dir / rel_path).resolve()
+
+        if not full_path.is_file():
+            return {"success": False, "message": f"ACTION: read_file {rel_path} — FILE NOT FOUND"}
+
+        try:
+            content = full_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return {"success": False, "message": f"ACTION: read_file {rel_path} — ERROR: {exc}"}
+
+        lines = content.splitlines(keepends=True)
+        total_lines = len(lines)
+
+        if offset or limit:
+            end = (offset + limit) if limit else total_lines
+            lines = lines[offset:end]
+            content = "".join(lines)
+            range_note = f" (lines {offset + 1}-{min(offset + len(lines), total_lines)} of {total_lines})"
+        else:
+            range_note = f" ({total_lines} lines)"
+
+        # Record file read hash for freshness checking
+        if self._db_handler and hasattr(self._db_handler, 'pdb') and self._db_handler.pdb:
+            try:
+                from automatica_db import record_file_read
+                record_file_read(self._db_handler.pdb, rel_path,
+                                  self._session_id, project_dir=self.project_dir)
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "message": (
+                f"ACTION: read_file {rel_path} — SUCCESS{range_note}\n\n"
+                f"--- FILE CONTENT ---\n{content}\n--- END FILE ---"
+            ),
+        }
+
+    def _do_write_file(self, params: dict) -> dict:
+        """Create a new file or overwrite an existing one.
+
+        Auto-upgrades to overwrite=true when the file already exists, so agents
+        don't loop retrying a denied write. Also injects a GUID comment header
+        into .py files that don't already have one.
+        """
+        rel_path = params.get("path", "")
+        content = params.get("content", "")
+
+        full_path = (self.project_dir / rel_path).resolve()
+
+        # Auto-upgrade: if file exists and overwrite not explicitly set, allow it
+        # (prevents infinite retry loops when agents forget overwrite=true)
+        if full_path.exists() and not params.get("overwrite", False):
+            params = {**params, "overwrite": True}
+
+        # Inject GUID header into new source files that don't already have one
+        _ext = rel_path.rsplit(".", 1)[-1].lower() if "." in rel_path else ""
+        _already_has_guid = "# GUID:" in content or "// GUID:" in content
+        if content and not _already_has_guid:
+            _guid = str(uuid.uuid4())
+            if _ext == "py":
+                content = f"# GUID: {_guid}\n{content}"
+            elif _ext in ("js", "ts", "tsx", "jsx", "cpp", "hpp", "h", "c", "go", "rs", "java"):
+                content = f"// GUID: {_guid}\n{content}"
+
+        try:
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            return {"success": False, "message": f"ACTION: write_file {rel_path} — ERROR: {exc}"}
+
+        line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+        return {
+            "success": True,
+            "message": f"ACTION: write_file {rel_path} — SUCCESS ({line_count} lines written)",
+        }
+
+    def _do_edit_file(self, params: dict) -> dict:
+        """Replace text in an existing file. Checks file lock and freshness first."""
+        rel_path = params.get("path", "")
+        old_text = params.get("old_text", "")
+        new_text = params.get("new_text", "")
+
+        if not old_text:
+            return {"success": False, "message": f"ACTION: edit_file {rel_path} — ERROR: old_text is empty"}
+
+        full_path = (self.project_dir / rel_path).resolve()
+
+        if not full_path.is_file():
+            return {"success": False, "message": f"ACTION: edit_file {rel_path} — FILE NOT FOUND"}
+
+        # Check file lock — if locked by another agent, deny edit
+        if self._db_handler and hasattr(self._db_handler, 'pdb') and self._db_handler.pdb:
+            try:
+                from automatica_db import check_file_lock, check_file_freshness
+                lock = check_file_lock(self._db_handler.pdb, rel_path)
+                if lock and lock['locked_by'] != self._session_actor:
+                    return {"success": False,
+                            "message": f"ACTION: edit_file {rel_path} — LOCKED by {lock['locked_by']} "
+                                       f"(since {lock['locked_at']}). Wait or use a different file."}
+
+                # Check freshness — if file changed since last read, force re-read
+                freshness = check_file_freshness(self._db_handler.pdb, rel_path,
+                                                   self._session_id, project_dir=self.project_dir)
+                if not freshness.get('fresh', True) and freshness.get('old_hash'):
+                    return {"success": False,
+                            "message": f"ACTION: edit_file {rel_path} — FILE CHANGED since you last read it. "
+                                       f"Use read_file to get the current content before editing."}
+            except ImportError:
+                pass
+            except Exception:
+                pass  # Best-effort checks
+
+        try:
+            content = full_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return {"success": False, "message": f"ACTION: edit_file {rel_path} — ERROR: {exc}"}
+
+        occurrences = content.count(old_text)
+        if occurrences == 0:
+            # Try to diagnose WHY the old_text wasn't found
+            hint = self._diagnose_edit_mismatch(content, old_text, rel_path)
+            return {
+                "success": False,
+                "message": (
+                    f"ACTION: edit_file {rel_path} — old_text NOT FOUND in file.\n"
+                    f"{hint}\n"
+                    f"HINT: Use read_file first to see the exact file contents, "
+                    f"then copy the exact text (including whitespace, quotes, newlines) into old_text."
+                ),
+            }
+
+        new_content = content.replace(old_text, new_text)
+
+        try:
+            full_path.write_text(new_content, encoding="utf-8")
+        except OSError as exc:
+            return {"success": False, "message": f"ACTION: edit_file {rel_path} — WRITE ERROR: {exc}"}
+
+        old_lines = content.count("\n")
+        new_lines = new_content.count("\n")
+        delta = new_lines - old_lines
+
+        # Record as a "read" so freshness checks pass on subsequent edits in this session
+        if self._db_handler and hasattr(self._db_handler, 'pdb') and self._db_handler.pdb:
+            try:
+                from automatica_db import record_file_read
+                record_file_read(self._db_handler.pdb, rel_path,
+                                 self._session_id, project_dir=self.project_dir)
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "message": (
+                f"ACTION: edit_file {rel_path} — SUCCESS "
+                f"(replaced {occurrences} occurrence{'s' if occurrences != 1 else ''}, "
+                f"{abs(delta)} lines {'added' if delta >= 0 else 'removed'})"
+            ),
+        }
+
+    # ── Live Scanner Actions ──────────────────────────────────────────────
+
+    def _do_query_file_structure(self, params: dict) -> dict:
+        """Get file's functions/classes/sections with line numbers (live from disk)."""
+        from project_scanner import get_file_structure
+        file_path = params.get("file_path", "")
+        if not file_path:
+            return {"success": False, "message": "ACTION: query_file_structure — ERROR: file_path is required"}
+
+        result = get_file_structure(self.project_dir, file_path)
+        if result.get("error"):
+            return {"success": False, "message": f"ACTION: query_file_structure {file_path} — {result['error']}"}
+
+        # Format the structure into readable text
+        lines = [
+            f"ACTION: query_file_structure {file_path} — SUCCESS",
+            f"Language: {result.get('language', '?')} | Lines: {result.get('line_count', 0)} | "
+            f"Size: {result.get('size_bytes', 0)} bytes",
+            "",
+            "--- STRUCTURE ---",
+        ]
+
+        for label, key in [("Classes", "classes"), ("Functions", "functions"),
+                           ("Enums", "enums"), ("Namespaces", "namespaces"),
+                           ("Sections", "sections"), ("TODOs", "todos")]:
+            items = result.get(key, [])
+            if items:
+                lines.append(f"\n{label} ({len(items)}):")
+                for item in items:
+                    name = item.get("name", item.get("text", "?"))
+                    line_num = item.get("line", "?")
+                    sig = item.get("signature", "")
+                    extra = f"  — {sig}" if sig else ""
+                    lines.append(f"  L{line_num}: {name}{extra}")
+
+        lines.append("--- END STRUCTURE ---")
+        return {"success": True, "message": "\n".join(lines)}
+
+    def _do_query_symbols(self, params: dict) -> dict:
+        """Search for functions/classes/keys across the project (live scan)."""
+        from project_scanner import search_symbols
+        name = params.get("name", "")
+        symbol_type = params.get("symbol_type", None)
+        file_glob = params.get("file_glob", None)
+
+        results = search_symbols(
+            self.project_dir,
+            name=name or None,
+            symbol_type=symbol_type or None,
+            file_glob=file_glob or None,
+        )
+
+        lines = [f"ACTION: query_symbols — {len(results)} MATCHES", "", "--- SYMBOLS ---"]
+        for r in results:
+            sig = r.get("signature", "")
+            extra = f"  — {sig}" if sig else ""
+            lines.append(f"  {r.get('file', '?')}:L{r.get('line', '?')} [{r.get('type', '?')}] {r.get('name', '?')}{extra}")
+        lines.append("--- END SYMBOLS ---")
+        return {"success": True, "message": "\n".join(lines)}
+
+    def _do_query_files(self, params: dict) -> dict:
+        """List project files with filters (live from disk)."""
+        from project_scanner import list_project_files
+        extension = params.get("extension", None)
+        path_contains = params.get("path_contains", None)
+
+        results = list_project_files(
+            self.project_dir,
+            extension=extension or None,
+            path_contains=path_contains or None,
+        )
+
+        lines = [f"ACTION: query_files — {len(results)} FILES", "", "--- FILES ---"]
+        for f in results:
+            lines.append(
+                f"  {f.get('path', '?')} ({f.get('language', '?')}, "
+                f"{f.get('line_count', 0)} lines, {f.get('size_bytes', 0)} bytes)"
+            )
+        lines.append("--- END FILES ---")
+        return {"success": True, "message": "\n".join(lines)}
+
+    def _do_search_by_guid(self, params: dict) -> dict:
+        """Find all occurrences of a GUID tag across project files."""
+        guid = params.get("guid", "").strip()
+        if not guid:
+            return {"success": False, "message": "ACTION: search_by_guid — ERROR: guid param required"}
+        import re as _re
+        pattern = _re.compile(
+            r'(?:#|//)\s*(?:GUID|guid)[\s:]+' + _re.escape(guid), _re.IGNORECASE
+        )
+        results: list[str] = []
+        for fp in self.project_dir.rglob("*"):
+            if not fp.is_file():
+                continue
+            if any(p in fp.parts for p in ("__pycache__", ".automatica", ".git", "node_modules")):
+                continue
+            if fp.suffix.lower() not in ('.py', '.js', '.ts', '.tsx', '.cpp', '.hpp',
+                                          '.h', '.c', '.go', '.rs', '.java'):
+                continue
+            try:
+                lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            rel = str(fp.relative_to(self.project_dir)).replace("\\", "/")
+            for i, line in enumerate(lines, 1):
+                if pattern.search(line):
+                    ctx_start = max(0, i - 6)
+                    ctx_end   = min(len(lines), i + 5)
+                    ctx = "\n".join(f"  {ctx_start+j+1:4}: {lines[ctx_start+j]}"
+                                    for j in range(ctx_end - ctx_start))
+                    results.append(f"--- {rel}:{i} ---\n{ctx}")
+        if not results:
+            return {"success": True, "message": f"ACTION: search_by_guid — GUID '{guid}' not found"}
+        header = f"ACTION: search_by_guid '{guid}' — {len(results)} match(es)"
+        return {"success": True, "message": header + "\n\n" + "\n\n".join(results[:20])}
+
+    def _do_query_wiki(self, params: dict) -> dict:
+        """Return a compact file index sorted by recency."""
+        from project_scanner import list_project_files
+        limit = min(int(params.get("limit", 25)), 100)
+        files = list_project_files(self.project_dir, limit=limit)
+        files.sort(key=lambda f: f.get("mtime_epoch", 0.0), reverse=True)
+        lines = [f"ACTION: query_wiki — {len(files)} files (most recent first)", "", "--- WIKI ---"]
+        for f in files[:limit]:
+            lines.append(
+                f"  {f['path']}  [{f.get('language', '?')}]  "
+                f"{f.get('line_count', 0)}L  {f.get('last_modified', '')}"
+            )
+        lines.append("--- END WIKI ---")
+        return {"success": True, "message": "\n".join(lines)}
+
+    def _do_query_file_section(self, params: dict) -> dict:
+        """Read specific lines or GUID-tagged section from a file."""
+        file_path = params.get("file_path", "")
+        guid = params.get("guid", "")
+
+        if not file_path:
+            return {"success": False, "message": "ACTION: query_file_section — ERROR: file_path is required"}
+
+        # GUID-based lookup: find lines between GUID marker and next GUID marker
+        if guid:
+            full_path = (self.project_dir / file_path).resolve()
+            if not full_path.is_file():
+                return {"success": False, "message": f"ACTION: query_file_section {file_path} — FILE NOT FOUND"}
+            try:
+                content = full_path.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                return {"success": False, "message": f"ACTION: query_file_section {file_path} — ERROR: {exc}"}
+
+            lines = content.splitlines(keepends=True)
+            guid_pattern = re.compile(r'(?:#|//)\s*GUID:\s*' + re.escape(guid), re.IGNORECASE)
+            next_guid_pattern = re.compile(r'(?:#|//)\s*GUID:\s*[\w-]+', re.IGNORECASE)
+
+            start_idx = None
+            for i, line in enumerate(lines):
+                if guid_pattern.search(line):
+                    start_idx = i
+                    break
+
+            if start_idx is None:
+                return {
+                    "success": False,
+                    "message": f"ACTION: query_file_section {file_path} — GUID '{guid}' NOT FOUND",
+                }
+
+            end_idx = len(lines)
+            for i in range(start_idx + 1, len(lines)):
+                if next_guid_pattern.search(lines[i]):
+                    end_idx = i
+                    break
+
+            section_content = "".join(lines[start_idx:end_idx])
+            range_info = f"lines {start_idx + 1}-{end_idx} of {len(lines)}"
+            return {
+                "success": True,
+                "message": (
+                    f"ACTION: query_file_section {file_path} guid={guid} — SUCCESS ({range_info})\n\n"
+                    f"--- CONTENT ---\n{section_content}\n--- END CONTENT ---"
+                ),
+            }
+
+        # Fall back to line-number / section-name based lookup
+        from project_scanner import get_file_section
+        line_start = params.get("line_start")
+        line_end = params.get("line_end")
+        section_name = params.get("section_name")
+
+        # Convert string params to int if needed
+        if isinstance(line_start, str) and line_start.isdigit():
+            line_start = int(line_start)
+        if isinstance(line_end, str) and line_end.isdigit():
+            line_end = int(line_end)
+
+        result = get_file_section(
+            self.project_dir, file_path,
+            line_start=line_start, line_end=line_end,
+            section_name=section_name,
+        )
+
+        if result.get("error"):
+            return {"success": False, "message": f"ACTION: query_file_section {file_path} — {result['error']}"}
+
+        range_info = f"lines {result.get('line_start', '?')}-{result.get('line_end', '?')} of {result.get('total_lines', '?')}"
+        return {
+            "success": True,
+            "message": (
+                f"ACTION: query_file_section {file_path} — SUCCESS ({range_info})\n\n"
+                f"--- CONTENT ---\n{result.get('content', '')}\n--- END CONTENT ---"
+            ),
+        }
+
+    def _do_get_json_keys(self, params: dict) -> dict:
+        """S3-W02: List top-level keys of a JSON config file with types and previews."""
+        file_path = params.get("file_path", "")
+        if not file_path:
+            return {"success": False, "message": "ACTION: get_json_keys — ERROR: file_path is required"}
+        full_path = (self.project_dir / file_path).resolve()
+        if not full_path.is_file():
+            return {"success": False, "message": f"ACTION: get_json_keys {file_path} — FILE NOT FOUND"}
+        try:
+            import json as _json
+            data = _json.loads(full_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception as exc:
+            return {"success": False, "message": f"ACTION: get_json_keys {file_path} — PARSE ERROR: {exc}"}
+        if not isinstance(data, dict):
+            return {"success": False,
+                    "message": f"ACTION: get_json_keys {file_path} — NOT A JSON OBJECT (type={type(data).__name__})"}
+        lines = [f"ACTION: get_json_keys {file_path} — {len(data)} top-level keys", ""]
+        for k, v in data.items():
+            type_name = type(v).__name__
+            if isinstance(v, str):
+                preview = repr(v[:60])
+            elif isinstance(v, (list, dict)):
+                preview = f"[{len(v)} items]" if isinstance(v, list) else f"{{{len(v)} keys}}"
+            else:
+                preview = repr(v)
+            lines.append(f"  {k!r}: {type_name} = {preview}")
+        return {"success": True, "message": "\n".join(lines)}
+
+    # ── Search & Listing ────────────────────────────────────────────────
+
+    def _do_search(self, params: dict) -> dict:
+        """Search file contents for a regex pattern using pure Python (cross-platform)."""
+        pattern = params.get("pattern", "")
+        search_path = params.get("path", ".")
+        file_glob = params.get("glob", "*")
+        max_matches = min(params.get("max_matches", 50), 200)
+
+        if not pattern:
+            return {"success": False, "message": "ACTION: search — ERROR: pattern is empty"}
+
+        target = (self.project_dir / search_path).resolve()
+        if not target.exists():
+            return {"success": False, "message": f"ACTION: search — PATH NOT FOUND: {search_path}"}
+
+        try:
+            regex = re.compile(pattern, re.IGNORECASE)
+        except re.error as exc:
+            return {"success": False, "message": f"ACTION: search — INVALID REGEX: {exc}"}
+
+        # Walk the directory tree and search file contents, grouped by file
+        file_matches: Dict[str, List[str]] = {}
+        search_root = target if target.is_dir() else target.parent
+        total_matches = 0
+
+        try:
+            for filepath in search_root.rglob(file_glob if file_glob != "*" else "*"):
+                if not filepath.is_file():
+                    continue
+                if filepath.suffix in ('.exe', '.dll', '.o', '.obj', '.lib', '.pdb', '.png', '.jpg', '.zip'):
+                    continue
+                if len(file_matches) >= 50:
+                    break
+                try:
+                    text = filepath.read_text(encoding='utf-8', errors='ignore')
+                    file_hits: List[str] = []
+                    for line_num, line in enumerate(text.splitlines(), 1):
+                        if regex.search(line):
+                            file_hits.append(f"  {line_num}: {line.strip()}")
+                            if total_matches + len(file_hits) >= max_matches:
+                                break
+                    if file_hits:
+                        try:
+                            rel = str(filepath.relative_to(self.project_dir)).replace("\\", "/")
+                        except ValueError:
+                            rel = str(filepath)
+                        try:
+                            mtime = datetime.fromtimestamp(filepath.stat().st_mtime).strftime('%Y-%m-%d')
+                        except OSError:
+                            mtime = '?'
+                        file_matches[f"{rel} (modified: {mtime})"] = file_hits
+                        total_matches += len(file_hits)
+                except (OSError, UnicodeDecodeError):
+                    continue
+                if total_matches >= max_matches:
+                    break
+        except Exception as exc:
+            return {"success": False, "message": f"ACTION: search — ERROR: {exc}"}
+
+        truncated = total_matches >= max_matches
+
+        result_lines: List[str] = []
+        for file_header, hits in file_matches.items():
+            result_lines.append(file_header)
+            result_lines.extend(hits)
+
+        results = "\n".join(result_lines)
+        suffix = f" (showing {max_matches} of {total_matches}+)" if truncated else ""
+        return {
+            "success": True,
+            "message": (
+                f"ACTION: search pattern='{pattern}' — {total_matches} MATCHES{suffix}\n\n"
+                f"--- RESULTS ---\n{results}\n--- END RESULTS ---"
+            ),
+        }
+
+    def _do_list_files(self, params: dict) -> dict:
+        """List files matching a glob pattern."""
+        pattern = params.get("pattern", "**/*")
+        base_path = params.get("path", ".")
+
+        target = (self.project_dir / base_path).resolve()
+        if not target.is_dir():
+            return {"success": False, "message": f"ACTION: list_files — NOT A DIRECTORY: {base_path}"}
+
+        try:
+            matches = sorted(target.glob(pattern))
+        except ValueError as exc:
+            return {"success": False, "message": f"ACTION: list_files — INVALID PATTERN: {exc}"}
+
+        # Filter to files only, make paths relative, add last_modified date
+        files = []
+        for m in matches:
+            if m.is_file():
+                try:
+                    rel = str(m.relative_to(self.project_dir)).replace("\\", "/")
+                except ValueError:
+                    rel = str(m)
+                try:
+                    mtime = datetime.fromtimestamp(m.stat().st_mtime).strftime('%Y-%m-%d')
+                except OSError:
+                    mtime = '?'
+                files.append(f"{rel} ({mtime})")
+            if len(files) >= 500:
+                break
+
+        file_list = "\n".join(files)
+        truncated = " (truncated at 500)" if len(files) >= 500 else ""
+        return {
+            "success": True,
+            "message": (
+                f"ACTION: list_files pattern='{pattern}' — {len(files)} FILES{truncated}\n\n"
+                f"--- FILES ---\n{file_list}\n--- END FILES ---"
+            ),
+        }
+
+    # ── Command Execution ───────────────────────────────────────────────
+
+    def _do_run_command(self, params: dict) -> dict:
+        """Run a shell command with safety checks."""
+        command = params.get("command", "")
+        timeout = min(params.get("timeout", 120), 600)
+
+        if not command:
+            return {"success": False, "message": "ACTION: run_command — ERROR: command is empty"}
+
+        if not self._check_command(command):
+            return {
+                "success": False,
+                "message": f"ACTION: run_command '{command}' — DENIED (blocked or not in safe list)",
+            }
+
+        try:
+            # shell=False: prevents shell metacharacter injection (;, &&, |, $(...), etc.)
+            cmd_tokens = shlex.split(command, posix=(os.name != 'nt'))
+            proc = subprocess.run(
+                cmd_tokens,
+                capture_output=True, encoding='utf-8', errors='replace',
+                timeout=timeout, cwd=str(self.project_dir),
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "message": f"ACTION: run_command '{command}' — TIMEOUT ({timeout}s)",
+            }
+        except OSError as exc:
+            return {"success": False, "message": f"ACTION: run_command '{command}' — ERROR: {exc}"}
+
+        output = (proc.stdout + proc.stderr).strip()
+        # Cap output to avoid flooding context
+        if len(output) > 20_000:
+            output = output[:20_000] + "\n... (output truncated at 20000 chars)"
+
+        status = "SUCCESS" if proc.returncode == 0 else "FAIL"
+        return {
+            "success": proc.returncode == 0,
+            "message": (
+                f"ACTION: run_command '{command}' — {status} (exit code {proc.returncode})\n\n"
+                f"--- OUTPUT ---\n{output}\n--- END OUTPUT ---"
+            ),
+        }
+
+    def _do_run_script(self, params: dict) -> dict:
+        """Run a script from the scripts/ directory."""
+        script = params.get("script", "")
+        args = params.get("args", [])
+        timeout = min(params.get("timeout", 120), 600)
+
+        if not script:
+            return {"success": False, "message": "ACTION: run_script — ERROR: script name is empty"}
+
+        script_path = (self.project_dir / "scripts" / script).resolve()
+
+        # Ensure script is within scripts/ directory
+        scripts_dir = (self.project_dir / "scripts").resolve()
+        if not str(script_path).startswith(str(scripts_dir)):
+            return {
+                "success": False,
+                "message": f"ACTION: run_script '{script}' — DENIED (must be in scripts/ directory)",
+            }
+
+        if not script_path.is_file():
+            return {
+                "success": False,
+                "message": f"ACTION: run_script '{script}' — FILE NOT FOUND in scripts/",
+            }
+
+        cmd = [str(script_path)] + (args if isinstance(args, list) else [str(args)])
+
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, encoding='utf-8', errors='replace',
+                timeout=timeout, cwd=str(self.project_dir),
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "message": f"ACTION: run_script '{script}' — TIMEOUT ({timeout}s)",
+            }
+        except OSError as exc:
+            return {"success": False, "message": f"ACTION: run_script '{script}' — ERROR: {exc}"}
+
+        output = (proc.stdout + proc.stderr).strip()
+        if len(output) > 20_000:
+            output = output[:20_000] + "\n... (output truncated at 20000 chars)"
+
+        status = "SUCCESS" if proc.returncode == 0 else "FAIL"
+        return {
+            "success": proc.returncode == 0,
+            "message": (
+                f"ACTION: run_script '{script}' — {status} (exit code {proc.returncode})\n\n"
+                f"--- OUTPUT ---\n{output}\n--- END OUTPUT ---"
+            ),
+        }
+
+    # ── Git Operations ──────────────────────────────────────────────────
+
+    def _do_commit(self, params: dict) -> dict:
+        """Stage files and create a git commit."""
+        files = params.get("files", [])
+        message = params.get("message", "")
+
+        if not message:
+            return {"success": False, "message": "ACTION: commit — ERROR: commit message is empty"}
+
+        if not files:
+            return {"success": False, "message": "ACTION: commit — ERROR: no files specified"}
+
+        if isinstance(files, str):
+            files = [files]
+
+        # Validate all paths before staging
+        for f in files:
+            check = self._check_path(f)
+            if not check["safe"]:
+                return {
+                    "success": False,
+                    "message": f"ACTION: commit — DENIED ({f}: {check['reason']})",
+                }
+
+        # Stage files
+        add_cmd = ["git", "add", "--"] + files
+        try:
+            proc = subprocess.run(
+                add_cmd, capture_output=True, encoding='utf-8', errors='replace',
+                timeout=30, cwd=str(self.project_dir),
+            )
+            if proc.returncode != 0:
+                return {
+                    "success": False,
+                    "message": f"ACTION: commit — GIT ADD FAILED: {proc.stderr.strip()}",
+                }
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return {"success": False, "message": f"ACTION: commit — GIT ADD ERROR: {exc}"}
+
+        # Commit
+        commit_cmd = ["git", "commit", "-m", message]
+        try:
+            proc = subprocess.run(
+                commit_cmd, capture_output=True, encoding='utf-8', errors='replace',
+                timeout=30, cwd=str(self.project_dir),
+            )
+            if proc.returncode != 0:
+                return {
+                    "success": False,
+                    "message": f"ACTION: commit — GIT COMMIT FAILED: {proc.stderr.strip()}",
+                }
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return {"success": False, "message": f"ACTION: commit — GIT COMMIT ERROR: {exc}"}
+
+        return {
+            "success": True,
+            "message": (
+                f"ACTION: commit — SUCCESS "
+                f"({len(files)} file{'s' if len(files) != 1 else ''} staged, "
+                f"committed as '{message}')"
+            ),
+        }
+
+    # ── Safety & Validation ─────────────────────────────────────────────
+
+    @staticmethod
+    def _diagnose_edit_mismatch(content: str, old_text: str, path: str) -> str:
+        """Diagnose why old_text wasn't found — return a helpful hint."""
+        hints = []
+
+        # Check if it looks like concatenated key+value (missing quotes/colons/spaces)
+        # e.g., "statusinactive" when file has '"status": "inactive"'
+        stripped = old_text.replace('"', '').replace("'", '').replace(' ', '').replace(':', '')
+        for line in content.splitlines():
+            line_stripped = line.replace('"', '').replace("'", '').replace(' ', '').replace(':', '')
+            if stripped and stripped in line_stripped:
+                hints.append(
+                    f"LIKELY MATCH: Your old_text '{old_text}' looks like a concatenated version of: '{line.strip()}'. "
+                    f"You need to include the exact formatting (quotes, colons, spaces)."
+                )
+                break
+
+        # Check whitespace mismatch
+        if old_text.strip() != old_text and old_text.strip() in content:
+            hints.append("WHITESPACE: old_text has leading/trailing whitespace. The trimmed version IS in the file.")
+        elif old_text.strip() in content:
+            hints.append(f"CLOSE MATCH: '{old_text.strip()}' exists in the file but not with this exact whitespace.")
+
+        # Check case mismatch
+        if old_text.lower() in content.lower() and old_text not in content:
+            hints.append("CASE MISMATCH: The text exists with different capitalization.")
+
+        # Check if old_text spans what looks like multiple lines flattened
+        if '\n' not in old_text and len(old_text) > 30:
+            # Might be multiple lines squashed together
+            words = old_text.split()
+            if len(words) >= 3:
+                # Check if first and last words appear on different lines
+                first_line = next((l for l in content.splitlines() if words[0] in l), None)
+                last_line = next((l for l in content.splitlines() if words[-1] in l), None)
+                if first_line and last_line and first_line != last_line:
+                    hints.append("MULTI-LINE: old_text appears to span multiple lines that were flattened. Include \\n newlines.")
+
+        # Show nearby content for context
+        for i, line in enumerate(content.splitlines()):
+            if any(word in line for word in old_text.split()[:2] if len(word) > 2):
+                start = max(0, i - 1)
+                end = min(len(content.splitlines()), i + 3)
+                nearby = '\n'.join(f"  {n+1}: {l}" for n, l in enumerate(content.splitlines()[start:end], start))
+                hints.append(f"NEARBY CONTENT (lines {start+1}-{end}):\n{nearby}")
+                break
+
+        return '\n'.join(hints) if hints else "No close matches found. Use read_file to see the exact file contents."
+
+    # -----------------------------------------------------------------------
+    # Config / Agent definition accessors (safe wrappers around project_settings)
+    # -----------------------------------------------------------------------
+
+    def _do_get_config(self, params: dict) -> dict:
+        """Read a project setting by key from the project DB.
+        Params: {"key": "setting_key"}
+        """
+        key = params.get("key", "")
+        if not key:
+            return {"success": False, "message": "ACTION: get_config — ERROR: 'key' param required"}
+        if not (self._db_handler and hasattr(self._db_handler, 'pdb') and self._db_handler.pdb):
+            return {"success": False, "message": "ACTION: get_config — ERROR: no DB connection"}
+        try:
+            from automatica_db import get_project_setting
+            value = get_project_setting(self._db_handler.pdb, key, "")
+            if not value:
+                return {"success": True, "message": f"ACTION: get_config '{key}' — NOT SET (empty)"}
+            # Truncate very large values
+            preview = value[:2000] + ("…[truncated]" if len(value) > 2000 else "")
+            return {"success": True, "message": f"ACTION: get_config '{key}':\n{preview}"}
+        except Exception as exc:
+            return {"success": False, "message": f"ACTION: get_config — ERROR: {exc}"}
+
+    def _do_set_config(self, params: dict) -> dict:
+        """Write a project setting by key into the project DB.
+        Params: {"key": "setting_key", "value": "string or JSON string"}
+        """
+        key = params.get("key", "")
+        value = params.get("value", "")
+        if not key:
+            return {"success": False, "message": "ACTION: set_config — ERROR: 'key' param required"}
+        if not (self._db_handler and hasattr(self._db_handler, 'pdb') and self._db_handler.pdb):
+            return {"success": False, "message": "ACTION: set_config — ERROR: no DB connection"}
+        try:
+            from automatica_db import set_project_setting
+            set_project_setting(self._db_handler.pdb, key, str(value))
+            return {"success": True, "message": f"ACTION: set_config '{key}' — SAVED ({len(str(value))} chars)"}
+        except Exception as exc:
+            return {"success": False, "message": f"ACTION: set_config — ERROR: {exc}"}
+
+    def _do_get_agent_def(self, params: dict) -> dict:
+        """Read an agent definition by slug.
+        Checks project_settings first (key='agent_def_{slug}'), then falls back
+        to the agents/ directory in the Automatica install.
+        Params: {"agent_slug": "developer"}
+        """
+        slug = params.get("agent_slug", "").lower().strip()
+        if not slug:
+            return {"success": False, "message": "ACTION: get_agent_def — ERROR: 'agent_slug' param required"}
+        # Try project DB first
+        if self._db_handler and hasattr(self._db_handler, 'pdb') and self._db_handler.pdb:
+            try:
+                from automatica_db import get_project_setting
+                stored = get_project_setting(self._db_handler.pdb, f"agent_def_{slug}", "")
+                if stored:
+                    preview = stored[:3000] + ("…[truncated]" if len(stored) > 3000 else "")
+                    return {"success": True, "message": f"ACTION: get_agent_def '{slug}':\n{preview}"}
+            except Exception:
+                pass
+        # Fall back to agents/ dir relative to executor install
+        agents_dir = Path(__file__).resolve().parent / "agents"
+        for name in [slug, slug.replace("-", "_"), slug.replace("_", "-")]:
+            candidate = agents_dir / f"{name}.md"
+            if candidate.is_file():
+                content = candidate.read_text(encoding="utf-8", errors="replace")
+                preview = content[:3000] + ("…[truncated]" if len(content) > 3000 else "")
+                return {"success": True, "message": f"ACTION: get_agent_def '{slug}':\n{preview}"}
+        return {"success": False, "message": f"ACTION: get_agent_def '{slug}' — NOT FOUND"}
+
+    def _do_store_handoff(self, params: dict) -> dict:
+        """Store handoff data for a task.
+        Params: {task_id: str, files_changed: list, tests_written: list, 
+                 coverage_notes: str, known_issues: str}
+        """
+        task_id = params.get("task_id", "")
+        files_changed = params.get("files_changed", [])
+        tests_written = params.get("tests_written", [])
+        coverage_notes = params.get("coverage_notes", "")
+        known_issues = params.get("known_issues", "")
+
+        # Validation
+        if not task_id:
+            return {"success": False, "message": "ACTION: store_handoff — ERROR: task_id is required"}
+        if not isinstance(files_changed, list):
+            return {"success": False, "message": "ACTION: store_handoff — ERROR: files_changed must be a list"}
+        if not isinstance(tests_written, list):
+            return {"success": False, "message": "ACTION: store_handoff — ERROR: tests_written must be a list"}
+
+        if not self._db_handler or not hasattr(self._db_handler, 'pdb') or not self._db_handler.pdb:
+            return {"success": False, "message": "ACTION: store_handoff — ERROR: no DB connection"}
+
+        # Build handoff JSON
+        handoff_data = {
+            "files_changed": files_changed,
+            "tests_written": tests_written,
+            "coverage_notes": coverage_notes,
+            "known_issues": known_issues,
+        }
+
+        try:
+            from automatica_db import update_task
+            success = update_task(self._db_handler.pdb, task_id, handoff_json=json.dumps(handoff_data))
+            if not success:
+                return {"success": False, "message": f"ACTION: store_handoff — ERROR: failed to update task {task_id}"}
+            return {"success": True, "message": f"ACTION: store_handoff {task_id} — SUCCESS (handoff data stored)"}
+        except Exception as exc:
+            return {"success": False, "message": f"ACTION: store_handoff — ERROR: {exc}"}
+
+    def _check_path(self, path: str) -> dict:
+        """Verify a path is safe: inside project_dir and not blocked."""
+        try:
+            resolved = (self.project_dir / path).resolve()
+        except (ValueError, OSError):
+            return {"safe": False, "reason": f"invalid path: {path}"}
+
+        # Must be inside project directory
+        try:
+            resolved.relative_to(self.project_dir)
+        except ValueError:
+            return {"safe": False, "reason": f"path escapes project directory: {path}"}
+
+        # Check blocked paths (glob patterns)
+        blocked = self.permissions.get("blocked_paths", [])
+        for pattern in blocked:
+            if fnmatch.fnmatch(str(resolved), pattern) or fnmatch.fnmatch(path, pattern):
+                return {"safe": False, "reason": f"path matches blocked pattern: {pattern}"}
+
+        # Check allowed paths — if specified, path must match at least one
+        allowed = self.permissions.get("allowed_paths", [])
+        if allowed:
+            if not any(
+                fnmatch.fnmatch(str(resolved), a) or fnmatch.fnmatch(path, a)
+                for a in allowed
+            ):
+                return {"safe": False, "reason": "path not in allowed_paths list"}
+
+        return {"safe": True, "reason": ""}
+
+    def _check_command(self, command: str) -> bool:
+        """Check if a command is permitted to run."""
+        cmd_lower = command.strip().lower()
+
+        # Check VCS-specific permissions first (dangerous git operations)
+        for vcs_cmd, perm_key in self.VCS_PERMISSION_MAP.items():
+            if cmd_lower.startswith(vcs_cmd.lower()):
+                default = self.VCS_PERMISSION_DEFAULTS.get(perm_key, False)
+                if not self.permissions.get(perm_key, default):
+                    return False
+                return True  # Explicitly permitted VCS command
+
+        # Check blocked commands (exact or prefix match)
+        blocked = self.permissions.get("blocked_commands", [])
+        for b in blocked:
+            if cmd_lower.startswith(b.lower()):
+                return False
+
+        # Check explicitly allowed commands
+        allowed = self.permissions.get("allowed_commands", [])
+        for a in allowed:
+            if cmd_lower.startswith(a.lower()):
+                return True
+
+        # Fall back to safe prefixes
+        for prefix in self.SAFE_COMMAND_PREFIXES:
+            if cmd_lower.startswith(prefix):
+                return True
+
+        return False
+
+    # ── Logging ─────────────────────────────────────────────────────────
+
+    def _log(
+        self,
+        timestamp: str,
+        action: str,
+        params: dict,
+        result: dict,
+        reasoning: str = "",
+    ):
+        """Record an action in the execution log."""
+        entry = {
+            "timestamp": timestamp,
+            "action": action,
+            "params": {k: v for k, v in params.items() if k != "content"},
+            "success": result.get("success", False),
+            "reasoning": reasoning,
+        }
+        # Store a truncated message for the log (full message is returned to caller)
+        # Strip the "ACTION: X — " boilerplate prefix if present, keeping only the meaningful part
+        msg = result.get("message", "")
+        if " \u2014 " in msg:
+            msg = msg.split(" \u2014 ", 1)[1]
+        entry["summary"] = msg[:200] + "..." if len(msg) > 200 else msg
+        self.action_log.append(entry)
+
+    def get_log(self) -> List[Dict]:
+        """Return the full action log."""
+        return list(self.action_log)
+
+    def get_log_summary(self) -> str:
+        """Return a human-readable summary of all executed actions."""
+        if not self.action_log:
+            return "No actions executed."
+        lines = []
+        for entry in self.action_log:
+            status = "OK" if entry["success"] else "FAIL"
+            lines.append(f"[{entry['timestamp']}] {status} {entry['action']} — {entry['summary'][:80]}")
+        return "\n".join(lines)
+
+    # ── Self-Test ───────────────────────────────────────────────────────
+
+    @classmethod
+    def self_test(cls, tmp_dir: Optional[Path] = None) -> bool:
+        """Validate all handlers work with a temporary project directory."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            project = Path(td)
+            scripts_dir = project / "scripts"
+            scripts_dir.mkdir()
+
+            permissions = {
+                "can_read_file": True,
+                "can_write_file": True,
+                "can_edit_file": True,
+                "can_search": True,
+                "can_run_command": True,
+                "can_commit": True,
+                "blocked_paths": ["*.secret"],
+                "allowed_commands": ["echo"],
+                "blocked_commands": ["rm"],
+            }
+
+            executor = cls(project, permissions)
+            errors = []
+
+            # Test write_file
+            r = executor.execute({"action": "write_file", "params": {"path": "test.txt", "content": "hello\nworld\n"}})
+            if not r["success"]:
+                errors.append(f"write_file: {r['message']}")
+
+            # Test read_file
+            r = executor.execute({"action": "read_file", "params": {"path": "test.txt"}})
+            if not r["success"] or "hello" not in r["message"]:
+                errors.append(f"read_file: {r['message']}")
+
+            # Test edit_file
+            r = executor.execute({"action": "edit_file", "params": {"path": "test.txt", "old_text": "hello", "new_text": "goodbye"}})
+            if not r["success"]:
+                errors.append(f"edit_file: {r['message']}")
+
+            # Test list_files
+            r = executor.execute({"action": "list_files", "params": {"pattern": "*.txt"}})
+            if not r["success"]:
+                errors.append(f"list_files: {r['message']}")
+
+            # Test run_command
+            r = executor.execute({"action": "run_command", "params": {"command": "echo test"}})
+            if not r["success"]:
+                errors.append(f"run_command: {r['message']}")
+
+            # Test blocked command
+            r = executor.execute({"action": "run_command", "params": {"command": "rm -rf /"}})
+            if r["success"]:
+                errors.append("run_command should have blocked 'rm'")
+
+            # Test path escape
+            r = executor.execute({"action": "read_file", "params": {"path": "../../etc/passwd"}})
+            if r["success"]:
+                errors.append("read_file should have blocked path escape")
+
+            # Test blocked path pattern
+            r = executor.execute({"action": "write_file", "params": {"path": "data.secret", "content": "x"}})
+            if r["success"]:
+                errors.append("write_file should have blocked .secret path")
+
+            # Test permission denial
+            restricted = cls(project, {"can_write_file": False})
+            r = restricted.execute({"action": "write_file", "params": {"path": "nope.txt", "content": "x"}})
+            if r["success"]:
+                errors.append("write_file should have been denied by permission")
+
+            # Test step_done (always allowed)
+            r = executor.execute({"action": "step_done", "params": {}})
+            if not r["success"]:
+                errors.append(f"step_done: {r['message']}")
+
+            # Test unknown action
+            r = executor.execute({"action": "fly_to_moon", "params": {}})
+            if r["success"]:
+                errors.append("unknown action should have failed")
+
+            if errors:
+                print(f"SELF-TEST FAILED ({len(errors)} errors):")
+                for e in errors:
+                    print(f"  - {e}")
+                return False
+
+            print(f"SELF-TEST PASSED — {len(executor.get_log())} actions logged")
+            return True
+
+
+if __name__ == "__main__":
+    AgentExecutor.self_test()

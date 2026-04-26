@@ -47,12 +47,17 @@ class SubprocessCliAdapter(BaseAdapter):
         # no prompt argument is provided.
         cmd = [safe_executable] + list(extra_args)
 
+        # Strip non-BMP characters that Windows cp1252 stdin can't encode
+        safe_prompt = full_prompt.encode('utf-8', errors='replace').decode('utf-8')
+
         try:
             result = subprocess.run(
                 cmd,
-                input=full_prompt,
+                input=safe_prompt,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=timeout,
                 cwd=cwd,
             )

@@ -431,8 +431,8 @@ def main():
                         help="Start API server (REST+WS) for app/phone connections")
     parser.add_argument("--Port", dest="port", type=int, default=8765,
                         help="API server port (default: 8765)")
-    parser.add_argument("--Host", dest="host", default="0.0.0.0",
-                        help="API server bind host (default: 0.0.0.0)")
+    parser.add_argument("--Host", dest="host", default="127.0.0.1",
+                        help="API server bind host (default: 127.0.0.1 — use 0.0.0.0 for LAN access)")
     # Provider management (global — no --Project needed)
     parser.add_argument("--AddProvider", dest="add_provider_name", metavar="NAME",
                         help="Add an AI provider (use with --ProviderType, --ProviderUrl, --ProviderModel, --ProviderKeyEnv)")

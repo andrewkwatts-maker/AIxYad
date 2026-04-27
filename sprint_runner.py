@@ -8,7 +8,7 @@ Orchestrates the full sprint lifecycle:
   3. Review    — summarize results, record velocity, log ceremonies
 
 Usage:
-    python sprint_runner.py --project-dir H:\\Github\\Old3DEngine --sprint-number 12 \\
+    python sprint_runner.py --project-dir H:\\Github\\Nova3D --sprint-number 12 \\
         --goal "Implement physics constraints" --provider Ollama --max-parallel 3
 
     # Or as a library:
@@ -1477,8 +1477,170 @@ class SprintRunner:
         _log(f"[PHASE] {step_name}: {'OK' if success else 'FAIL'} "
              f"({loop_result.get('iterations', 0)} iterations)")
 
+    # Patterns in stderr/stdout that indicate a stale or corrupt build directory
+    _STALE_BUILD_PATTERNS = (
+        'no such file or directory',
+        'cannot find path',
+        'system cannot find the file',
+        'system cannot find the path',
+        'ctest configuration: no tests found',
+        'unable to find executable',
+        'does not exist',
+    )
+
+    def _is_stale_build_failure(self, combined_output: str) -> bool:
+        """Return True if combined stdout+stderr suggests a stale/corrupt build dir."""
+        lower = combined_output.lower()
+        return any(pat in lower for pat in self._STALE_BUILD_PATTERNS)
+
+    def _has_stale_project_paths(self, build_dir: str, source_dir: str) -> bool:
+        """Check if CTestTestfile.cmake files reference a different project directory.
+
+        This catches the case where a build directory was generated for a
+        different (or renamed) project and still contains hardcoded paths
+        to the old project location — e.g. Old3DEngine paths in a Nova3D build.
+        """
+        build_path = Path(build_dir)
+        if not build_path.exists():
+            return False
+
+        source_path = Path(source_dir).resolve()
+        source_name = source_path.name  # e.g. "Nova3D"
+
+        for cmake_file in build_path.rglob('CTestTestfile.cmake'):
+            try:
+                content = cmake_file.read_text(encoding='utf-8', errors='replace')
+            except Exception:
+                continue
+            for line in content.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith('#'):
+                    # Check comment lines too — cmake puts source/build dirs in comments
+                    if stripped.startswith('# Source directory:') or stripped.startswith('# Build directory:'):
+                        dir_path = stripped.split(':', 1)[1].strip()
+                        dir_name = Path(dir_path.replace('\\', '/')).name
+                        # If the embedded path refers to a DIFFERENT project, it's stale
+                        if dir_name and dir_name != source_name and dir_name != build_path.name:
+                            _log(f'[STALE-CHECK] {cmake_file} references project '
+                                 f'"{dir_name}" but expected "{source_name}"')
+                            return True
+                    continue
+                # Check include(), subdirs(), and add_test() for paths outside the expected project
+                path_cmds = ('include(', 'subdirs(', 'add_test(')
+                if any(cmd in stripped for cmd in path_cmds) and '/' in stripped:
+                    # Extract the path argument
+                    for prefix in ('include("', "include('", 'subdirs("', "subdirs('",
+                                   'add_test("', "add_test('"):
+                        if prefix in stripped:
+                            path_start = stripped.index(prefix) + len(prefix)
+                            path_end = stripped.find('"', path_start)
+                            if path_end == -1:
+                                path_end = stripped.find("'", path_start)
+                            if path_end > path_start:
+                                ref_path = stripped[path_start:path_end].replace('\\', '/')
+                                # Absolute path referencing a different project
+                                if ref_path.startswith('/') or (len(ref_path) > 2 and ref_path[1] == ':'):
+                                    ref_project = Path(ref_path).parts
+                                    src_parts = source_path.parts
+                                    # Compare up to common depth — if top-level dirs diverge, it's stale
+                                    if len(ref_project) >= 3 and len(src_parts) >= 3:
+                                        if ref_project[2].lower() != src_parts[2].lower():
+                                            _log(f'[STALE-CHECK] {cmake_file} has absolute path '
+                                                 f'referencing "{ref_project[2]}" instead of "{src_parts[2]}"')
+                                            return True
+        return False
+
+    def _clean_stale_build_dirs(self, source_dir: str) -> list:
+        """Find and remove any stale build directories under source_dir.
+
+        Returns a list of directories that were cleaned.
+        Checks common build directory names: build, build_new, build_old, cmake-build-*.
+        """
+        import shutil
+        import stat
+        source_path = Path(source_dir)
+        cleaned = []
+
+        def _force_remove(_func, _path, _exc_info):
+            try:
+                os.chmod(_path, stat.S_IWRITE)
+                _func(_path)
+            except Exception:
+                pass
+
+        # Common cmake build directory patterns
+        build_dir_candidates = ['build_new', 'build_old', 'build_debug', 'build_release']
+        for pattern in ['cmake-build-*']:
+            cleaned_dirs = list(source_path.glob(pattern))
+            build_dir_candidates.extend(d.name for d in cleaned_dirs if d.is_dir())
+
+        for name in build_dir_candidates:
+            candidate = source_path / name
+            if candidate.is_dir() and self._has_stale_project_paths(str(candidate), source_dir):
+                _log(f'[STALE-CLEANUP] Removing stale build dir: {candidate}')
+                try:
+                    shutil.rmtree(candidate, onexc=_force_remove)
+                    cleaned.append(str(candidate))
+                    _log(f'[STALE-CLEANUP] Removed: {candidate}')
+                except Exception as exc:
+                    _log(f'[STALE-CLEANUP] Failed to remove {candidate}: {exc}')
+
+        return cleaned
+
+    def _clean_reconfigure_build(self, build_dir: str, source_dir: str) -> bool:
+        """Delete the build directory and run cmake -B to reconfigure from scratch.
+
+        Returns True if the reconfigure succeeded.
+        """
+        import shutil
+        import stat
+        build_path = Path(build_dir)
+        if not build_path.exists():
+            _log(f"[RECONFIGURE] Build dir does not exist: {build_dir}")
+            return False
+
+        def _force_remove(_func, _path, _exc_info):
+            """Handle read-only files (e.g. .git pack files on Windows)."""
+            try:
+                os.chmod(_path, stat.S_IWRITE)
+                _func(_path)
+            except Exception:
+                pass
+
+        _log(f"[RECONFIGURE] Removing stale build dir: {build_dir}")
+        try:
+            shutil.rmtree(build_path, onexc=_force_remove)
+        except Exception as exc:
+            _log(f"[RECONFIGURE] Failed to remove build dir: {exc}")
+            return False
+
+        _log(f"[RECONFIGURE] Running cmake -B {build_dir} in {source_dir}")
+        try:
+            proc = subprocess.run(
+                ['cmake', '-B', build_dir],
+                capture_output=True, encoding='utf-8', errors='replace',
+                cwd=source_dir, timeout=300,
+            )
+            if proc.returncode == 0:
+                _log('[RECONFIGURE] cmake configure succeeded')
+                return True
+            else:
+                _log(f'[RECONFIGURE] cmake configure failed (exit {proc.returncode})')
+                if proc.stderr.strip():
+                    for line in proc.stderr.strip().splitlines()[-5:]:
+                        _log(f'[RECONFIGURE]   {line}')
+                return False
+        except Exception as exc:
+            _log(f'[RECONFIGURE] cmake configure error: {exc}')
+            return False
+
     def _execute_cmd_phase(self, step: dict):
-        """Run a command-line phase (e.g. build verification, test verification, VCS push)."""
+        """Run a command-line phase (e.g. build verification, test verification, VCS push).
+
+        If a cmake/ctest command fails with signs of a stale build directory
+        (missing files, corrupt cache), this method automatically performs a
+        clean reconfigure (rm build + cmake -B build) and retries once.
+        """
         step_name = step.get("name", "")
         config_str = step.get("config_json", "{}")
         try:
@@ -1494,6 +1656,39 @@ class SprintRunner:
 
         cwd = config.get("cwd", str(self.project_dir))
         timeout = config.get("timeout", 300)
+
+        # --- Handle "cd <subdir> && <real_command>" compound commands --------
+        # subprocess.run() without shell=True cannot handle "cd X && Y", so
+        # we strip the cd prefix, adjust cwd, and run only the real command.
+        import re as _re
+        cd_match = _re.match(r'^cd\s+(\S+)\s*&&\s*(.+)$', command, _re.IGNORECASE)
+        if cd_match:
+            cd_target = cd_match.group(1)
+            command = cd_match.group(2).strip()
+            cwd = str(Path(cwd) / cd_target)
+            _log(f'[PHASE] {step_name}: decomposed cd prefix — cwd={cwd}, cmd={command}')
+
+        # --- Pre-flight: proactive stale-path detection for build commands ---
+        is_build_cmd = any(kw in command.lower() for kw in ('cmake', 'ctest'))
+        if is_build_cmd:
+            # Determine build_dir and source_dir from command context.
+            # If cwd already IS the build dir (ends with /build or \build),
+            # source_dir is its parent. Otherwise build is a child of cwd.
+            if cwd.replace('\\', '/').rstrip('/').endswith('/build'):
+                pf_build_dir = cwd
+                pf_source_dir = str(Path(cwd).parent)
+            else:
+                pf_build_dir = str(Path(cwd) / 'build')
+                pf_source_dir = cwd
+
+            # Check primary build dir for wrong project paths
+            if Path(pf_build_dir).exists() and self._has_stale_project_paths(pf_build_dir, pf_source_dir):
+                _log(f'[PHASE] {step_name}: pre-flight detected stale project paths in '
+                     f'{pf_build_dir} — triggering clean reconfigure')
+                self._clean_reconfigure_build(pf_build_dir, pf_source_dir)
+
+            # Also clean any stale secondary build dirs (build_new, build_old, etc.)
+            self._clean_stale_build_dirs(pf_source_dir)
 
         _log(f"[PHASE] {step_name}: running '{command}' in {cwd}")
 
@@ -1512,11 +1707,51 @@ class SprintRunner:
                     lines = proc.stdout.strip().splitlines()
                     for line in lines[-5:]:
                         _log(f"[PHASE]   {line}")
+                return  # success — done
             else:
                 _log(f"[PHASE] {step_name}: command failed (exit {proc.returncode})")
                 if proc.stderr.strip():
                     for line in proc.stderr.strip().splitlines()[-10:]:
                         _log(f"[PHASE]   {line}")
+
+                # --- Auto clean-reconfigure on stale build dir ---
+                combined = (proc.stdout or '') + '\n' + (proc.stderr or '')
+                if is_build_cmd:
+                    # Reuse same logic as pre-flight: if cwd IS the build dir,
+                    # source is its parent; otherwise build is cwd/build.
+                    if cwd.replace('\\', '/').rstrip('/').endswith('/build'):
+                        build_dir = cwd
+                        source_dir = str(Path(cwd).parent)
+                    else:
+                        build_dir = str(Path(cwd) / 'build')
+                        source_dir = cwd
+
+                    stale_output = self._is_stale_build_failure(combined)
+                    stale_paths = self._has_stale_project_paths(build_dir, source_dir)
+                    if stale_output or stale_paths:
+                        reason = 'stale output patterns' if stale_output else 'wrong project paths'
+                        _log(f"[PHASE] {step_name}: detected stale build directory "
+                             f"({reason}) — triggering clean reconfigure")
+                        if self._clean_reconfigure_build(build_dir, source_dir):
+                            _log(f"[PHASE] {step_name}: retrying command after reconfigure")
+                            retry_proc = subprocess.run(
+                                cmd_tokens, capture_output=True,
+                                encoding='utf-8', errors='replace',
+                                cwd=cwd, timeout=timeout,
+                            )
+                            if retry_proc.returncode == 0:
+                                _log(f"[PHASE] {step_name}: retry succeeded after reconfigure")
+                                if retry_proc.stdout.strip():
+                                    for line in retry_proc.stdout.strip().splitlines()[-5:]:
+                                        _log(f"[PHASE]   {line}")
+                                return  # success on retry
+                            else:
+                                _log(f"[PHASE] {step_name}: retry also failed "
+                                     f"(exit {retry_proc.returncode})")
+                                if retry_proc.stderr.strip():
+                                    for line in retry_proc.stderr.strip().splitlines()[-10:]:
+                                        _log(f"[PHASE]   {line}")
+
                 # Record failure but don't stop the pipeline by default
                 fail_action = config.get("on_failure", "warn")
                 if fail_action == "stop":

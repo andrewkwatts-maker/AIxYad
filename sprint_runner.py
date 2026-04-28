@@ -1578,6 +1578,13 @@ class SprintRunner:
         source_path = Path(source_dir).resolve()
         source_name = source_path.name  # e.g. "Nova3D"
 
+        # Resolve the source root once for prefix comparison.
+        try:
+            source_root = source_path.resolve()
+        except Exception:
+            source_root = source_path
+        source_root_str = str(source_root).replace('\\', '/').rstrip('/').lower()
+
         for cmake_file in build_path.rglob('CTestTestfile.cmake'):
             try:
                 content = cmake_file.read_text(encoding='utf-8', errors='replace')
@@ -1589,11 +1596,18 @@ class SprintRunner:
                     # Check comment lines too — cmake puts source/build dirs in comments
                     if stripped.startswith('# Source directory:') or stripped.startswith('# Build directory:'):
                         dir_path = stripped.split(':', 1)[1].strip()
-                        dir_name = Path(dir_path.replace('\\', '/')).name
-                        # If the embedded path refers to a DIFFERENT project, it's stale
-                        if dir_name and dir_name != source_name and dir_name != build_path.name:
-                            _log(f'[STALE-CHECK] {cmake_file} references project '
-                                 f'"{dir_name}" but expected "{source_name}"')
+                        if not dir_path:
+                            continue
+                        # Stale only if the referenced path is OUTSIDE the source root.
+                        # (A 'tests' subdir legitimately has its own CTestTestfile.cmake
+                        #  that references H:/Github/Nova3D/tests — not stale.)
+                        try:
+                            ref_path = str(Path(dir_path.replace('\\', '/')).resolve()).replace('\\', '/').lower()
+                        except Exception:
+                            continue
+                        if not ref_path.startswith(source_root_str):
+                            _log(f'[STALE-CHECK] {cmake_file.name} references "{dir_path}" '
+                                 f'which is outside source root {source_root}')
                             return True
                     continue
                 # Check include(), subdirs(), and add_test() for paths outside the expected project

@@ -9,7 +9,7 @@ Usage:
     result = protocol.execute_loop(task, context, instructions)
 
     # As CLI
-    python agent_protocol.py --provider Ollama --project-dir H:\\Github\\Old3DEngine \\
+    python agent_protocol.py --provider Ollama --project-dir H:\\Github\\Nova3D \\
         --task-file CURRENT_TASK.md --step 8 --config pipeline-config.json
 """
 
@@ -133,11 +133,21 @@ class AgentProtocol:
         self.project_dir = Path(project_dir)
         self.max_iterations = max_iterations
         self.log_dir = Path(log_dir) if log_dir else None
-        self.confirm_before_done = confirm_before_done
         self._broadcast_fn = broadcast_fn
 
         # Load adapter
         self.adapter = get_adapter(provider, provider_config)
+
+        # Agentic-mode adapters (e.g. Claude CLI in -p mode) do their own
+        # tool work outside the executor, so the action_log is always empty.
+        # Skip the confirm-before-done round for them — the synthesised
+        # step_done IS the success signal.
+        _is_agentic = (
+            isinstance(self.provider_config, dict)
+            and (self.provider_config.get('mode') or '').lower() == 'agentic'
+        )
+        self.confirm_before_done = confirm_before_done and not _is_agentic
+        self._is_agentic = _is_agentic
 
         # Load permissions (from config or defaults)
         self.permissions = provider_config.get('permissions', DEFAULT_PERMISSIONS)

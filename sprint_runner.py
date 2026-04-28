@@ -454,16 +454,37 @@ class SprintRunner:
         start_time = time.time()
 
         # Partition tasks: parallel-safe vs sequential
+        # Also skip tasks that have already hit the retry cap.
         parallel_tasks = []
         sequential_tasks = []
+        _retry_cap_skipped = 0
         for st in sprint_tasks:
             if st.get("status") in ("done", "blocked"):
                 continue
             # Check if underlying task allows parallel execution
             task_row = conn.execute(
-                "SELECT parallel_ok, depends_on_task_id FROM tasks WHERE display_id = ?",
+                "SELECT parallel_ok, depends_on_task_id, failure_count FROM tasks WHERE display_id = ?",
                 (st["task_display_id"],)
             ).fetchone()
+            # Skip tasks that have reached the retry cap
+            if task_row:
+                _fc = task_row["failure_count"] if "failure_count" in task_row.keys() else 0
+                try:
+                    from automatica_db import MAX_TASK_RETRIES
+                    if _fc >= MAX_TASK_RETRIES:
+                        _log(f"[EXEC] Skipping {st['task_display_id']} — retry cap "
+                             f"({_fc}/{MAX_TASK_RETRIES} failures)")
+                        _retry_cap_skipped += 1
+                        result.tasks_blocked += 1
+                        result.task_results.append(TaskResult(
+                            task_display_id=st["task_display_id"],
+                            title=st.get("title", ""),
+                            success=False,
+                            error=f"Retry cap reached ({_fc}/{MAX_TASK_RETRIES} failures)",
+                        ))
+                        continue
+                except ImportError:
+                    pass
             if task_row and task_row["parallel_ok"] and not task_row["depends_on_task_id"]:
                 parallel_tasks.append(st)
             else:
@@ -547,10 +568,23 @@ class SprintRunner:
     def _bump_all_failed_complexities(
         self, conn: sqlite3.Connection, task_results: List["TaskResult"]
     ) -> None:
-        """S3-W03: Bump complexity for all failed tasks after a zero-velocity sprint."""
+        """S3-W03: Bump complexity for all failed tasks after a zero-velocity sprint.
+
+        Respects the per-task retry cap — tasks that have already reached
+        MAX_TASK_RETRIES failures are skipped (they are already blocked).
+        """
         bumped = 0
+        skipped_cap = 0
         for tr in task_results:
             if not tr.success:
+                # Skip tasks already at retry cap
+                try:
+                    from automatica_db import get_task_failure_count, MAX_TASK_RETRIES
+                    if get_task_failure_count(conn, tr.task_display_id) >= MAX_TASK_RETRIES:
+                        skipped_cap += 1
+                        continue
+                except ImportError:
+                    pass
                 try:
                     from validation import handle_agent_failure
                     handle_agent_failure(
@@ -581,7 +615,10 @@ class SprintRunner:
                             bumped += 1
                     except Exception:
                         pass
-        _log(f"[HEAL] Auto-bumped complexity for {bumped} tasks due to 0-velocity sprint")
+        _msg = f"[HEAL] Auto-bumped complexity for {bumped} tasks due to 0-velocity sprint"
+        if skipped_cap:
+            _msg += f" ({skipped_cap} skipped — at retry cap)"
+        _log(_msg)
 
     def _execute_parallel(
         self, tasks: List[dict], sprint_number: int
@@ -615,6 +652,8 @@ class SprintRunner:
         """Execute a single sprint task through AgentProtocol.
 
         Each call gets its own DB connections (thread-safe).
+        Respects the per-task retry cap (MAX_TASK_RETRIES) and applies
+        exponential backoff between retries based on cumulative failure_count.
         """
         display_id = sprint_task.get("task_display_id", "")
         title = sprint_task.get("title", "")
@@ -623,6 +662,32 @@ class SprintRunner:
         # Thread-local DB connections
         pconn = self._get_project_conn()
         gconn = self._get_global_conn()
+
+        # ── Retry-cap gate: skip if this task already hit the failure limit ──
+        try:
+            from automatica_db import (
+                get_task_failure_count, get_retry_backoff_seconds,
+                MAX_TASK_RETRIES,
+            )
+            _db_failure_count = get_task_failure_count(pconn, display_id)
+            if _db_failure_count >= MAX_TASK_RETRIES:
+                _log(f"[TASK] {display_id} SKIPPED — retry cap reached "
+                     f"({_db_failure_count}/{MAX_TASK_RETRIES} failures)")
+                return TaskResult(
+                    task_display_id=display_id,
+                    title=title,
+                    success=False,
+                    error=f"Retry cap reached ({_db_failure_count}/{MAX_TASK_RETRIES} failures)",
+                )
+
+            # Apply exponential backoff if this is a retry (failure_count > 0)
+            if _db_failure_count > 0:
+                backoff_s = get_retry_backoff_seconds(_db_failure_count)
+                _log(f"[TASK] {display_id}: retry #{_db_failure_count + 1} — "
+                     f"backoff {backoff_s:.0f}s before execution")
+                time.sleep(backoff_s)
+        except ImportError:
+            _db_failure_count = 0  # graceful degradation
 
         # Count prior failed/blocked attempts for this task (for accurate retry tracking)
         try:
@@ -875,9 +940,15 @@ class SprintRunner:
                     attempt_number=_attempt_number,
                     max_attempts=3,
                 )
-                if failure_result['action'] == 'bumped':
+                _fc = failure_result.get('failure_count', '?')
+                _mr = failure_result.get('max_retries', '?')
+                if failure_result['action'] == 'retry_cap_reached':
+                    _log(f"[TASK] {display_id} RETRY CAP REACHED "
+                         f"({_fc}/{_mr} failures) — marked blocked, escalated")
+                elif failure_result['action'] == 'bumped':
                     _log(f"[TASK] {display_id} complexity bumped: "
-                         f"{failure_result['old_complexity']} → {failure_result['new_complexity']}")
+                         f"{failure_result['old_complexity']} → {failure_result['new_complexity']} "
+                         f"(failure {_fc}/{_mr})")
                 elif failure_result['action'] == 'exhausted':
                     _log(f"[TASK] {display_id} EXHAUSTED — at max complexity, needs human intervention")
 
@@ -1619,7 +1690,7 @@ class SprintRunner:
             proc = subprocess.run(
                 ['cmake', '-B', build_dir],
                 capture_output=True, encoding='utf-8', errors='replace',
-                cwd=source_dir, timeout=300,
+                cwd=source_dir, timeout=1800,  # large C++ projects take ~3 min to configure
             )
             if proc.returncode == 0:
                 _log('[RECONFIGURE] cmake configure succeeded')

@@ -33,6 +33,7 @@ param(
     [string[]]$Projects         = @(),                # multi-project mode (overrides $Project if non-empty)
     [string]$Provider           = "Claude-Opus",
     [int]   $MaxMinutesPerCycle = 110,
+    [int]   $StartupWaitSeconds = 60,                 # grace period before any work starts
     [double]$MeanHours          = 2.0,
     [double]$StdDevHours        = 1.0,
     [double]$MinHours           = 0.5,
@@ -63,6 +64,7 @@ if ($ConfigFile -and (Test-Path $ConfigFile)) {
         if ($names -contains 'Projects')           { $Projects           = @($cfg.Projects) }
         if ($names -contains 'Provider')           { $Provider           = $cfg.Provider }
         if ($names -contains 'MaxMinutesPerCycle') { $MaxMinutesPerCycle = [int]$cfg.MaxMinutesPerCycle }
+        if ($names -contains 'StartupWaitSeconds') { $StartupWaitSeconds = [int]$cfg.StartupWaitSeconds }
         if ($names -contains 'MeanHours')          { $MeanHours          = [double]$cfg.MeanHours }
         if ($names -contains 'StdDevHours')        { $StdDevHours        = [double]$cfg.StdDevHours }
         if ($names -contains 'MinHours')           { $MinHours           = [double]$cfg.MinHours }
@@ -106,8 +108,13 @@ function Reschedule-NextRun([double]$hoursFromNow) {
 $projectList = if ($Projects.Count -gt 0) { $Projects } else { @($Project) }
 $perProject  = [Math]::Max(10, [int]($MaxMinutesPerCycle / $projectList.Count))
 
-Write-Log ("=== Cycle start | projects=[{0}] provider={1} max={2}min ({3}min/project) | dist μ={4}h σ={5}h ===" -f `
-    ($projectList -join ', '), $Provider, $MaxMinutesPerCycle, $perProject, $MeanHours, $StdDevHours)
+Write-Log ("=== Cycle start | projects=[{0}] provider={1} max={2}min ({3}min/project) | dist μ={4}h σ={5}h | startup-wait={6}s ===" -f `
+    ($projectList -join ', '), $Provider, $MaxMinutesPerCycle, $perProject, $MeanHours, $StdDevHours, $StartupWaitSeconds)
+
+if ($StartupWaitSeconds -gt 0) {
+    Write-Log ("Settling for {0}s before first project — cancel via Ctrl-C or 'Disable-ScheduledTask -TaskName {1}' if needed" -f $StartupWaitSeconds, $TaskName)
+    Start-Sleep -Seconds $StartupWaitSeconds
+}
 
 $lastExit = 0
 foreach ($proj in $projectList) {

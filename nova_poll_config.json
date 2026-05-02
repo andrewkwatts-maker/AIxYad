@@ -1,11 +1,12 @@
 {
-  "_comment": "Gaussian polling. MeanHours=2 + StdDevHours=1 → ~68% in [1h,3h]. Each cycle iterates Projects in order; per-project budget = MaxMinutesPerCycle / count(Projects).",
+  "_comment": "Gaussian polling. μ=2h σ=1h → ~68% in [1h,3h]. StartupWaitSeconds is the grace period at cycle start (cancel/abort window).",
   "Projects": [
     "H:\\Github\\Nova3D",
     "H:\\Github\\Automatica-App"
   ],
   "Provider": "Claude-Opus",
   "MaxMinutesPerCycle": 110,
+  "StartupWaitSeconds": 60,
   "MeanHours": 2.0,
   "StdDevHours": 1.0,
   "MinHours": 0.5,

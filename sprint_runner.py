@@ -340,6 +340,11 @@ class SprintRunner:
         # Log planning ceremony
         self._log_ceremony(conn, sprint_id, "planning", f"Sprint goal: {goal}")
 
+        # Auto-recover stale-blocked tasks (cool-down expired) before planning,
+        # so a transient hang or rate-limit blip from hours ago doesn't keep
+        # the task permanently ineligible.
+        self._recover_stale_blocks(conn, cool_down_hours=1.0)
+
         # Get backlog
         backlog = get_backlog(conn, limit=100)
         if task_filter:
@@ -570,55 +575,80 @@ class SprintRunner:
     ) -> None:
         """S3-W03: Bump complexity for all failed tasks after a zero-velocity sprint.
 
-        Respects the per-task retry cap — tasks that have already reached
-        MAX_TASK_RETRIES failures are skipped (they are already blocked).
+        Bug fix (2026-05-03): previously this path called handle_agent_failure
+        which counted toward failure_count. A single real failure could then
+        amplify across all planned tasks in the same sprint, blocking 3+ tasks
+        permanently from one root cause. Now we ONLY bump complexity (Fibonacci
+        step up). The per-task failure_count is incremented exactly once per
+        actual execution attempt elsewhere.
+
+        Tasks at retry cap are skipped (already blocked).
         """
+        from automatica_db import get_task_failure_count, MAX_TASK_RETRIES
+        _fib = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89]
         bumped = 0
         skipped_cap = 0
         for tr in task_results:
-            if not tr.success:
-                # Skip tasks already at retry cap
-                try:
-                    from automatica_db import get_task_failure_count, MAX_TASK_RETRIES
-                    if get_task_failure_count(conn, tr.task_display_id) >= MAX_TASK_RETRIES:
-                        skipped_cap += 1
-                        continue
-                except ImportError:
-                    pass
-                try:
-                    from validation import handle_agent_failure
-                    handle_agent_failure(
-                        conn, None, tr.task_display_id,
-                        agent="sprint_runner",
-                        provider=self.provider,
-                        reason="zero-velocity sprint auto-bump",
-                        attempt_number=1,
-                        max_attempts=99,  # always bump, never exhaust
+            if tr.success:
+                continue
+            try:
+                if get_task_failure_count(conn, tr.task_display_id) >= MAX_TASK_RETRIES:
+                    skipped_cap += 1
+                    continue
+            except Exception:
+                pass
+            try:
+                row = conn.execute(
+                    "SELECT complexity FROM tasks WHERE display_id = ?",
+                    (tr.task_display_id,)
+                ).fetchone()
+                if row:
+                    current = row["complexity"] if isinstance(row, dict) else row[0]
+                    new_c = next((f for f in _fib if f > (current or 0)), 89)
+                    conn.execute(
+                        "UPDATE tasks SET complexity = ? WHERE display_id = ?",
+                        (new_c, tr.task_display_id)
                     )
+                    conn.commit()
                     bumped += 1
-                except Exception:
-                    # Fallback: direct DB complexity bump to next Fibonacci step
-                    try:
-                        _fib = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89]
-                        row = conn.execute(
-                            "SELECT complexity FROM tasks WHERE display_id = ?",
-                            (tr.task_display_id,)
-                        ).fetchone()
-                        if row:
-                            current = row["complexity"] if isinstance(row, dict) else row[0]
-                            new_c = next((f for f in _fib if f > current), 89)
-                            conn.execute(
-                                "UPDATE tasks SET complexity = ? WHERE display_id = ?",
-                                (new_c, tr.task_display_id)
-                            )
-                            conn.commit()
-                            bumped += 1
-                    except Exception:
-                        pass
-        _msg = f"[HEAL] Auto-bumped complexity for {bumped} tasks due to 0-velocity sprint"
+            except Exception:
+                pass
+        _msg = f"[HEAL] Bumped complexity for {bumped} task(s) (no failure_count change)"
         if skipped_cap:
             _msg += f" ({skipped_cap} skipped — at retry cap)"
         _log(_msg)
+
+    def _recover_stale_blocks(
+        self, conn: sqlite3.Connection, cool_down_hours: float = 1.0
+    ) -> int:
+        """Auto-recover blocked tasks whose last_failure_at is older than the
+        cool-down window. Resets status to 'backlog' and failure_count to 0 so
+        the planner gives them another shot.
+
+        Without this, MAX_TASK_RETRIES is effectively a permanent ban — one
+        transient hang or rate-limit blip kills the task forever. With this,
+        the system self-heals after waiting cool_down_hours.
+        """
+        try:
+            cur = conn.execute(
+                "UPDATE tasks SET status='backlog', failure_count=0, blocked_reason=NULL "
+                "WHERE status='blocked' "
+                "  AND last_failure_at IS NOT NULL "
+                "  AND datetime(last_failure_at, '+' || ? || ' hours') < datetime('now')"
+                "  AND (blocked_reason IS NULL OR blocked_reason LIKE '%Retry cap%' "
+                "       OR blocked_reason LIKE '%CLI exited%' "
+                "       OR blocked_reason LIKE '%timed out%' "
+                "       OR blocked_reason LIKE '%auto-bump%')",
+                (cool_down_hours,)
+            )
+            n = cur.rowcount
+            conn.commit()
+            if n:
+                _log(f"[HEAL] Recovered {n} stale-blocked task(s) past {cool_down_hours}h cool-down")
+            return n
+        except Exception as exc:
+            _log(f"[HEAL] _recover_stale_blocks failed: {exc}")
+            return 0
 
     def _execute_parallel(
         self, tasks: List[dict], sprint_number: int

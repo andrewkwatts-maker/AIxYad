@@ -938,6 +938,10 @@ def init_project_db(project_dir: Path) -> sqlite3.Connection:
     # Always apply auxiliary schema (all statements use IF NOT EXISTS — safe to re-run)
     conn.executescript(_PROJECT_FILES_SCHEMA)
     conn.executescript(_PROJECT_TRIGGERS_SCHEMA)
+    # WF-3: race protection — manual_claim_until lets --AddTask reserve a task
+    # for a window so the autonomous loop doesn't race against humans / parallel
+    # agents on the same task. Idempotent column add.
+    _add_column_if_missing(conn, 'tasks', 'manual_claim_until', 'TEXT DEFAULT NULL')
     conn.commit()
     # G-06: Indexes for common query patterns (only on tables that actually exist)
     tables_present = {
@@ -3425,10 +3429,16 @@ def get_tasks(conn: sqlite3.Connection, limit: int = 200, offset: int = 0) -> li
 
 
 def get_backlog(conn: sqlite3.Connection, limit: int = 50) -> list:
-    """Get all backlog tasks ordered by priority then sort_order."""
+    """Get all backlog tasks ordered by priority then sort_order.
+
+    WF-3: skip tasks under a manual_claim_until window — humans / parallel
+    agents have first dibs for the claim period.
+    """
     priority_order = "CASE priority WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 WHEN 'LOW' THEN 3 END"
     return [dict(r) for r in conn.execute(
-        f"SELECT * FROM tasks WHERE status = 'backlog' ORDER BY {priority_order}, sort_order, id LIMIT ?",
+        f"SELECT * FROM tasks WHERE status = 'backlog' "
+        f"  AND (manual_claim_until IS NULL OR datetime(manual_claim_until) <= datetime('now')) "
+        f"ORDER BY {priority_order}, sort_order, id LIMIT ?",
         (limit,)
     ).fetchall()]
 

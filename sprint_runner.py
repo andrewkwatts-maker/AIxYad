@@ -2418,6 +2418,18 @@ def main():
             except (json.JSONDecodeError, OSError):
                 pass
 
+    # WF-6: validate pipeline_config.provider on load — warn loudly when missing
+    # so misconfigured runs without a CLI override are caught immediately
+    # instead of silently picking up the wrong provider.
+    _cfg_provider = (pipeline_config.get("provider") or "").strip() if pipeline_config else ""
+    if pipeline_config and not _cfg_provider:
+        _msg = (f"[WARN] pipeline_config.provider is unset for project '{project_dir.name}'. "
+                f"Using --provider={args.provider} as fallback. "
+                f"Fix with: python run_autonomous.py --SetPipelineProvider <name> --Project {project_dir}")
+        _log(_msg)
+        # Backfill the in-memory pipeline_config so downstream code sees a value
+        pipeline_config["provider"] = args.provider
+
     # Resolve directories
     log_dir = Path(args.log_dir) if args.log_dir else (_pkg_dir / "logs" / "sprints")
     standards_dir = Path(args.standards_dir) if args.standards_dir else None

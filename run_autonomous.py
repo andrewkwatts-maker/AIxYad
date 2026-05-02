@@ -124,18 +124,31 @@ def cmd_remove_provider(name_or_id: str):
     print(f"[REMOVE PROVIDER] Removed '{target['name']}' (id={target['id']})")
 
 
-def cmd_add_task(project_dir: Path, task_text: str):
-    """Add a task to the project backlog."""
+def cmd_add_task(project_dir: Path, task_text: str, claim_hours: float = 1.0):
+    """Add a task to the project backlog.
+
+    WF-3: by default, sets manual_claim_until = now + claim_hours so the
+    autonomous loop won't race against humans / parallel agents working on
+    the same task. Pass claim_hours=0 to skip the claim window.
+    """
+    from datetime import datetime, timedelta, timezone
     conn = _get_project_conn(project_dir)
-    # Auto-assign display_id
-    max_id = conn.execute("SELECT MAX(CAST(SUBSTR(display_id,6) AS INT)) FROM tasks WHERE display_id LIKE 'TASK-%'").fetchone()[0] or 0
+    max_id = conn.execute(
+        "SELECT MAX(CAST(SUBSTR(display_id,6) AS INT)) FROM tasks WHERE display_id LIKE 'TASK-%'"
+    ).fetchone()[0] or 0
     display_id = f"TASK-{max_id + 1:03d}"
+    claim_until = None
+    if claim_hours > 0:
+        claim_until = (datetime.now(timezone.utc) + timedelta(hours=claim_hours)
+                       ).strftime("%Y-%m-%d %H:%M:%S")
     conn.execute(
-        "INSERT INTO tasks (display_id, title, priority, complexity, description, status) VALUES (?,?,?,?,?,?)",
-        (display_id, task_text[:200], "MEDIUM", 3, task_text, "backlog")
+        "INSERT INTO tasks (display_id, title, priority, complexity, description, status, manual_claim_until) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (display_id, task_text[:200], "MEDIUM", 3, task_text, "backlog", claim_until)
     )
     conn.commit()
-    print(f"[ADD TASK] {display_id}: {task_text[:80]}")
+    claim_msg = f" [claimed until {claim_until}]" if claim_until else ""
+    print(f"[ADD TASK] {display_id}: {task_text[:80]}{claim_msg}")
     conn.close()
 
 

@@ -1571,4 +1571,187 @@ class APIServer:
             result = await loop.run_in_executor(None, _run)
             return result
 
+        # ── Triggers CRUD (project-scoped) ───────────────────────────────────
+        # Added in support of Automatica-App polish pass: triggers screen now
+        # round-trips through the API instead of local-JSON-only persistence.
+        @app.get('/api/projects/{project_id}/triggers')
+        def list_project_triggers(project_id: int):
+            from automatica_db import init_project_db
+            row = _get_global_conn().execute(
+                'SELECT directory FROM known_projects WHERE id = ?', (project_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, f'project {project_id} not known')
+            pdir = row['directory']
+            pconn = init_project_db(Path(pdir))
+            rows = pconn.execute(
+                'SELECT id, name, type, config_json, enabled, created_at, updated_at '
+                'FROM triggers ORDER BY id'
+            ).fetchall()
+            return {'triggers': [dict(r) for r in rows]}
+
+        @app.post('/api/projects/{project_id}/triggers',
+                  dependencies=[Depends(_verify_token)])
+        def create_project_trigger(project_id: int, body: dict):
+            from automatica_db import init_project_db
+            import json as _json
+            row = _get_global_conn().execute(
+                'SELECT directory FROM known_projects WHERE id = ?', (project_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, f'project {project_id} not known')
+            pdir = row['directory']
+            pconn = init_project_db(Path(pdir))
+            cfg = body.get('config_json', body.get('config', {}))
+            if not isinstance(cfg, str):
+                cfg = _json.dumps(cfg or {})
+            cur = pconn.execute(
+                "INSERT INTO triggers (name, type, config_json, enabled) "
+                "VALUES (?, ?, ?, ?)",
+                (body.get('name', ''), body.get('type', ''), cfg,
+                 1 if body.get('enabled', True) else 0),
+            )
+            pconn.commit()
+            return {'success': True, 'id': cur.lastrowid}
+
+        @app.put('/api/projects/{project_id}/triggers/{trigger_id}',
+                 dependencies=[Depends(_verify_token)])
+        def update_project_trigger(project_id: int, trigger_id: int, body: dict):
+            from automatica_db import init_project_db
+            import json as _json
+            row = _get_global_conn().execute(
+                'SELECT directory FROM known_projects WHERE id = ?', (project_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, f'project {project_id} not known')
+            pdir = row['directory']
+            pconn = init_project_db(Path(pdir))
+            allowed = {'name', 'type', 'config_json', 'enabled'}
+            sets, vals = [], []
+            for k, v in body.items():
+                if k not in allowed:
+                    continue
+                if k == 'config_json' and not isinstance(v, str):
+                    v = _json.dumps(v or {})
+                if k == 'enabled':
+                    v = 1 if v else 0
+                sets.append(f'{k} = ?')
+                vals.append(v)
+            if not sets:
+                return {'success': True, 'updated': 0}
+            sets.append("updated_at = CURRENT_TIMESTAMP")
+            vals.append(trigger_id)
+            cur = pconn.execute(
+                f"UPDATE triggers SET {', '.join(sets)} WHERE id = ?", vals
+            )
+            pconn.commit()
+            return {'success': True, 'updated': cur.rowcount}
+
+        @app.delete('/api/projects/{project_id}/triggers/{trigger_id}',
+                    dependencies=[Depends(_verify_token)])
+        def delete_project_trigger(project_id: int, trigger_id: int):
+            from automatica_db import init_project_db
+            row = _get_global_conn().execute(
+                'SELECT directory FROM known_projects WHERE id = ?', (project_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, f'project {project_id} not known')
+            pdir = row['directory']
+            pconn = init_project_db(Path(pdir))
+            cur = pconn.execute('DELETE FROM triggers WHERE id = ?', (trigger_id,))
+            pconn.commit()
+            return {'success': True, 'deleted': cur.rowcount}
+
+        @app.put('/api/projects/{project_id}/pipeline_config',
+                 dependencies=[Depends(_verify_token)])
+        def set_project_pipeline_config(project_id: int, body: dict):
+            from automatica_db import init_project_db, set_project_setting_json
+            row = _get_global_conn().execute(
+                'SELECT directory FROM known_projects WHERE id = ?', (project_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, f'project {project_id} not known')
+            pdir = row['directory']
+            pconn = init_project_db(Path(pdir))
+            set_project_setting_json(pconn, 'pipeline_config', body)
+            pconn.commit()
+            return {'success': True}
+
+        # ── Configs CRUD (global) + per-project overrides ─────────────────────
+        @app.get('/api/configs')
+        def list_configs(project_id: int | None = None):
+            from automatica_db import get_configs as _get_configs
+            conn = _get_global_conn()
+            return {'configs': _get_configs(conn)}
+
+        @app.post('/api/configs', dependencies=[Depends(_verify_token)])
+        def create_config_route(body: dict):
+            from automatica_db import create_config as _create_config
+            conn = _get_global_conn()
+            cid = _create_config(
+                conn,
+                name=body.get('name', ''),
+                description=body.get('description', ''),
+                parent_config_id=body.get('parent_config_id'),
+            )
+            return {'success': True, 'id': cid}
+
+        @app.put('/api/configs/{config_id}', dependencies=[Depends(_verify_token)])
+        def update_config_route(config_id: int, body: dict):
+            conn = _get_global_conn()
+            allowed = {'name', 'description', 'parent_config_id'}
+            sets, vals = [], []
+            for k, v in body.items():
+                if k in allowed:
+                    sets.append(f'{k} = ?'); vals.append(v)
+            if not sets:
+                return {'success': True, 'updated': 0}
+            vals.append(config_id)
+            cur = conn.execute(
+                f"UPDATE configs SET {', '.join(sets)} WHERE id = ?", vals
+            )
+            conn.commit()
+            return {'success': True, 'updated': cur.rowcount}
+
+        @app.delete('/api/configs/{config_id}',
+                    dependencies=[Depends(_verify_token)])
+        def delete_config_route(config_id: int):
+            conn = _get_global_conn()
+            cur = conn.execute('DELETE FROM configs WHERE id = ?', (config_id,))
+            conn.commit()
+            return {'success': True, 'deleted': cur.rowcount}
+
+        @app.get('/api/projects/{project_id}/config-overrides')
+        def get_project_config_overrides(project_id: int):
+            from automatica_db import get_config_overrides as _get_overrides
+            conn = _get_global_conn()
+            row = conn.execute(
+                'SELECT config_id FROM known_projects WHERE id = ?', (project_id,)
+            ).fetchone()
+            if not row or row['config_id'] is None:
+                return {'overrides': {}}
+            return {'overrides': _get_overrides(conn, row['config_id'])}
+
+        @app.put('/api/projects/{project_id}/config-overrides/{key}',
+                 dependencies=[Depends(_verify_token)])
+        def set_project_config_override(project_id: int, key: str, body: dict):
+            from automatica_db import (
+                set_config_override as _set_override,
+                delete_config_override as _del_override,
+            )
+            conn = _get_global_conn()
+            row = conn.execute(
+                'SELECT config_id FROM known_projects WHERE id = ?', (project_id,)
+            ).fetchone()
+            if not row or row['config_id'] is None:
+                raise HTTPException(404, 'project has no config attached')
+            cid = row['config_id']
+            value = body.get('value')
+            if value is None:
+                _del_override(conn, cid, key)
+            else:
+                _set_override(conn, cid, key, value, body.get('scope', 'project'))
+            conn.commit()
+            return {'success': True}
+
         return app

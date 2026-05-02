@@ -97,9 +97,18 @@ class SubprocessCliAdapter(BaseAdapter):
             if mode == "agentic":
                 # Trust exit code; synthesise a step_done so the protocol marks success.
                 if result.returncode != 0:
+                    # Capture first AND last 2K of stderr — Claude CLI usually
+                    # prints meaningful errors at the end (final assertion / timeout
+                    # message), so a head-only truncation hides the real cause.
+                    err = (result.stderr or '').strip()
+                    if len(err) > 4000:
+                        err = err[:2000] + "\n…[truncated]…\n" + err[-2000:]
+                    out_tail = (output or '').strip()
+                    if len(out_tail) > 1000:
+                        out_tail = "…" + out_tail[-1000:]
                     return _error_response(
                         f"Agentic CLI exited {result.returncode}. "
-                        f"stderr: {result.stderr[:400]}"
+                        f"stderr: {err}\nstdout-tail: {out_tail}"
                     )
                 summary = output[-800:] if output else "Task completed (no output)."
                 return {

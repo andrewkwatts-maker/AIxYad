@@ -1,8 +1,13 @@
 {
-  "_comment": "Optional config for nova_poll_once.ps1. Edit and the next cycle picks it up. Distribution defaults: geometric decay 1-8h, mean ~1.99h.",
-  "Project": "H:\\Github\\Nova3D",
+  "_comment": "Gaussian polling. MeanHours=2 + StdDevHours=1 → ~68% in [1h,3h]. Each cycle iterates Projects in order; per-project budget = MaxMinutesPerCycle / count(Projects).",
+  "Projects": [
+    "H:\\Github\\Nova3D",
+    "H:\\Github\\Automatica-App"
+  ],
   "Provider": "Claude-Opus",
   "MaxMinutesPerCycle": 110,
-  "IntervalHours":   [1, 2, 3, 4, 5, 6, 7, 8],
-  "IntervalWeights": [0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625, 0.0078125, 0.0078125]
+  "MeanHours": 2.0,
+  "StdDevHours": 1.0,
+  "MinHours": 0.5,
+  "MaxHours": 12.0
 }

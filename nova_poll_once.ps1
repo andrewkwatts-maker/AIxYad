@@ -50,8 +50,18 @@ New-Item -ItemType Directory -Path (Split-Path $LogFile) -Force | Out-Null
 
 function Write-Log([string]$msg) {
     $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $msg"
-    Add-Content -Path $LogFile -Value $line -Encoding UTF8
     Write-Host $line
+    # AppendAllText uses FileShare.ReadWrite so 'tail -F' readers don't block us.
+    # Retry up to 3 times on transient I/O contention.
+    for ($i = 0; $i -lt 3; $i++) {
+        try {
+            [System.IO.File]::AppendAllText($LogFile, $line + "`r`n",
+                                            [System.Text.UTF8Encoding]::new($false))
+            return
+        } catch {
+            Start-Sleep -Milliseconds (50 * ($i + 1))
+        }
+    }
 }
 
 # ── Config-file override ─────────────────────────────────────────────────────
@@ -112,7 +122,7 @@ Write-Log ("=== Cycle start | projects=[{0}] provider={1} max={2}min ({3}min/pro
     ($projectList -join ', '), $Provider, $MaxMinutesPerCycle, $perProject, $MeanHours, $StdDevHours, $StartupWaitSeconds)
 
 if ($StartupWaitSeconds -gt 0) {
-    Write-Log ("Settling for {0}s before first project — cancel via Ctrl-C or 'Disable-ScheduledTask -TaskName {1}' if needed" -f $StartupWaitSeconds, $TaskName)
+    Write-Log ("Settling for {0}s before first project (cancel via Ctrl-C or Disable-ScheduledTask -TaskName {1})" -f $StartupWaitSeconds, $TaskName)
     Start-Sleep -Seconds $StartupWaitSeconds
 }
 

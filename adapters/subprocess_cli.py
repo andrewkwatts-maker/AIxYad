@@ -67,16 +67,29 @@ Do not ask for clarification. If something is ambiguous, make the most reasonabl
 senior-engineer choice and proceed.
 """
 
-# Phrases that, combined with zero file changes, indicate a false success.
-# Used by WF-8 false-success detection.
-_NO_OP_PHRASES = [
-    "already done", "already complete", "already implemented", "already fixed",
+# Two distinct buckets of "no files changed" outcomes — they must NOT be
+# conflated. The first means "the work is genuinely already in place"
+# (treat as step_done). The second means "I cannot proceed" (treat as
+# need_help → WF-4 classifies as refusal).
+_VERIFIED_COMPLETE_PHRASES = [
+    "already done", "already complete", "already implemented", "already in place",
+    "already fixed", "already present", "already wired",
     "no changes needed", "no changes required", "no action needed",
-    "could not", "cannot ", "can't ",
-    "unable to", "would need", "requires more",
+    "no files needed", "no new files needed",
+    "satisfy ", "satisfies ", "meet the criteria", "meets the criteria",
+    "task appears complete", "appears complete from",
+    "existing files already", "existing implementation already",
+]
+_BLOCKED_PHRASES = [
+    "could not", "cannot proceed", "cannot complete", "cannot implement",
+    "cannot do this", "cannot do that", "can't proceed", "can't complete",
+    "unable to proceed", "unable to complete", "unable to implement",
+    "would need", "i would need to",
+    "requires more", "requires additional",
     "i don't have", "i do not have",
     "not enough information", "not enough context",
-    "not implemented", "left as-is", "left alone",
+    "have not inspected", "haven't inspected",
+    "need to know", "need to inspect",
 ]
 
 
@@ -263,9 +276,24 @@ def _git_diff_summary(cwd: str | None) -> tuple[bool, str]:
         return (False, "")
 
 
-def _looks_like_no_op(summary: str) -> bool:
+def _classify_zero_diff_summary(summary: str) -> str:
+    """When Claude exits 0 with no file changes, the summary tells us why.
+
+    Returns:
+      'verified_complete' — work is genuinely already in place; treat as done.
+      'blocked'           — Claude cannot proceed; mark for human review.
+      'unknown'           — neutral / can't tell. Default to need_help (conservative).
+    """
     s = (summary or "").lower()
-    return any(p in s for p in _NO_OP_PHRASES)
+    has_complete = any(p in s for p in _VERIFIED_COMPLETE_PHRASES)
+    has_blocked = any(p in s for p in _BLOCKED_PHRASES)
+    # If both present, "blocked" wins — can't trust a confident "complete"
+    # claim that comes alongside "I cannot do X".
+    if has_blocked:
+        return 'blocked'
+    if has_complete:
+        return 'verified_complete'
+    return 'unknown'
 
 
 # ── Adapter ─────────────────────────────────────────────────────────────────
@@ -350,14 +378,58 @@ class SubprocessCliAdapter(BaseAdapter):
                         f"stderr: {err}\nstdout-tail: {out_tail}"
                     )
 
-                # WF-8: false-success detection
+                # WF-8: zero-diff classification (three-way, not binary)
                 if expects_changes:
                     post_changed, post_stat = _git_diff_summary(cwd)
                     files_changed = post_changed and (post_stat != _pre_stat)
-                    if (not files_changed) and _looks_like_no_op(output):
+                    if not files_changed:
+                        verdict = _classify_zero_diff_summary(output)
+                        if verdict == 'verified_complete':
+                            # Claude reports the work is genuinely already done.
+                            # Honour that — mark step_done with an audit note.
+                            log.info(
+                                "VERIFIED-COMPLETE: exit 0 with no changes but summary "
+                                "asserts existing implementation already meets criteria"
+                            )
+                            return {
+                                "action": "step_done",
+                                "params": {
+                                    "summary": (
+                                        "[verified-complete: no new code needed, "
+                                        "existing implementation already satisfies the "
+                                        f"task] {output[-600:]}"
+                                    ),
+                                },
+                                "reasoning": (
+                                    "WF-8 verified-complete: zero diff + completion "
+                                    "phrases, no blocker phrases."
+                                ),
+                            }
+                        if verdict == 'blocked':
+                            log.warning(
+                                "FALSE-SUCCESS (blocked): exit 0 but no files changed "
+                                "and summary indicates Claude cannot proceed"
+                            )
+                            log_path = _write_failure_log(
+                                safe_executable, rc, stdout, stderr, safe_prompt
+                            )
+                            return {
+                                "action": "need_help",
+                                "params": {
+                                    "reason": (
+                                        "False-success (blocked): CLI exited 0 but no "
+                                        "files were modified and summary indicates "
+                                        f"blockage. Summary: {output[-400:]}"
+                                    ),
+                                },
+                                "reasoning": (
+                                    f"WF-8 false-success/blocked (log={log_path.name})."
+                                ),
+                            }
+                        # verdict == 'unknown' → conservative default: need_help
                         log.warning(
-                            "FALSE-SUCCESS: exit 0 but no files changed and summary "
-                            "looks like a no-op — treating as need_help"
+                            "FALSE-SUCCESS (unclear): exit 0, no files changed, "
+                            "summary is neutral — defaulting to need_help"
                         )
                         log_path = _write_failure_log(
                             safe_executable, rc, stdout, stderr, safe_prompt
@@ -366,13 +438,13 @@ class SubprocessCliAdapter(BaseAdapter):
                             "action": "need_help",
                             "params": {
                                 "reason": (
-                                    "False-success: CLI exited 0 but no files were "
-                                    "modified and the summary contains no-op phrases. "
+                                    "False-success (unclear): CLI exited 0 but no "
+                                    "files were modified and the summary is neutral. "
                                     f"Summary: {output[-400:]}"
                                 ),
                             },
                             "reasoning": (
-                                f"WF-8 false-success guard tripped (log={log_path.name})."
+                                f"WF-8 false-success/unclear (log={log_path.name})."
                             ),
                         }
 

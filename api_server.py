@@ -96,6 +96,19 @@ def _get_global_conn():
     return adb.init_global_db(db_path)
 
 
+def _safe_load_settings() -> dict:
+    """Read ~/.automatica/settings.json; return {} on any error.
+    Used by the startup-gate + auth-middleware before _build_app spins up."""
+    from pathlib import Path
+    settings_path = Path.home() / '.automatica' / 'settings.json'
+    if not settings_path.exists():
+        return {}
+    try:
+        return _json.loads(settings_path.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
 def _push_event_sync(event_type: str, data: dict) -> None:
     """Module-level helper: push a WS event if the API server is running.
 
@@ -155,6 +168,25 @@ class APIServer:
         try:
             import uvicorn
             from fastapi import FastAPI
+
+            # ── HARDENING: refuse to bind to non-loopback without an API key ──
+            # 0.0.0.0 / external IP exposed to LAN/WAN must require auth.
+            # Localhost-only is allowed in dev mode without auth (other local
+            # processes can still hit it but the attack surface is only this PC).
+            _host_is_loopback = self.host in ('127.0.0.1', 'localhost', '::1')
+            _has_key = bool(
+                os.environ.get('AUTOMATICA_API_KEY', '')
+                or _safe_load_settings().get('api_key', '')
+            )
+            _force_open = os.environ.get('AUTOMATICA_ALLOW_UNAUTH', '') == '1'
+            if not _host_is_loopback and not _has_key and not _force_open:
+                raise RuntimeError(
+                    f"REFUSING to bind {self.host}:{self.port} without an API key. "
+                    f"Either: set AUTOMATICA_API_KEY env var (preferred), or write "
+                    f"'api_key' into ~/.automatica/settings.json, or override the "
+                    f"safety with AUTOMATICA_ALLOW_UNAUTH=1 (NOT recommended). "
+                    f"Loopback-only deployments (127.0.0.1) skip this check."
+                )
 
             app = self._build_app()
 
@@ -252,13 +284,77 @@ class APIServer:
             except Exception:
                 return ['http://localhost', 'http://127.0.0.1']
 
+        # CORS — never use '*' here. Default to localhost-only origins.
+        _origins = _get_allowed_origins()
+        if '*' in _origins:
+            import logging as _log_cors
+            _log_cors.getLogger(__name__).warning(
+                "CORS allow_origins contains '*' — refusing. Falling back to localhost-only."
+            )
+            _origins = ['http://localhost', 'http://127.0.0.1']
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=_get_allowed_origins(),
-            allow_methods=['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+            allow_origins=_origins,
+            allow_methods=['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
             allow_headers=['Authorization', 'Content-Type', 'X-API-Key'],
             allow_credentials=True,
         )
+
+        # ── HARDENING: default-deny auth middleware ────────────────────────────
+        # Whitelist a small set of public routes. Everything else requires a
+        # valid Bearer token / session token / X-API-Key when an API key is
+        # configured. When NO key is configured, only loopback callers get
+        # through (catches the "forgot to set API key but bound to LAN" case).
+        _PUBLIC_ROUTES = frozenset({
+            '/api/health',           # health probe
+            '/api/auth/login',       # need to be reachable to issue a token
+            '/api/auth/qr',          # device-pairing handshake start
+            '/api/auth/pair',        # device-pairing handshake finish
+            '/api/openapi.json', '/openapi.json',
+            '/docs', '/redoc',
+        })
+        _LOOPBACK_HOSTS = {'127.0.0.1', '::1', 'localhost'}
+
+        @app.middleware('http')
+        async def _auth_gate(request: Request, call_next):
+            path = request.url.path or ''
+            # Always allow OPTIONS preflight + the public whitelist
+            if request.method == 'OPTIONS' or path in _PUBLIC_ROUTES:
+                return await call_next(request)
+            # Pull credentials from Authorization header OR X-API-Key OR ?token=
+            token = ''
+            auth_h = request.headers.get('authorization') or ''
+            if auth_h.lower().startswith('bearer '):
+                token = auth_h[7:].strip()
+            if not token:
+                token = (request.headers.get('x-api-key') or
+                         request.query_params.get('token') or '')
+            expected_key = (
+                os.environ.get('AUTOMATICA_API_KEY', '')
+                or _safe_load_settings().get('api_key', '')
+            )
+            if not expected_key:
+                # No key configured → only loopback callers allowed.
+                client = (request.client.host if request.client else '')
+                if client not in _LOOPBACK_HOSTS:
+                    return JSONResponse(
+                        {'error': 'Authentication required (server has no API key '
+                                  'configured and you are not on loopback). Set '
+                                  'AUTOMATICA_API_KEY env var or settings.json '
+                                  'api_key field.'},
+                        status_code=401,
+                    )
+                return await call_next(request)
+            # Key configured: token must match it OR be a live session token.
+            if token == expected_key:
+                return await call_next(request)
+            sess_exp = _sessions.get(token)
+            if sess_exp and sess_exp > _t.monotonic():
+                return await call_next(request)
+            return JSONResponse(
+                {'error': 'Invalid or missing token'},
+                status_code=401,
+            )
 
         # ── C-04: Rate limiting middleware ────────────────────────────────────
         @app.middleware('http')
@@ -382,19 +478,30 @@ class APIServer:
         def _check_ws_auth(websocket: WebSocket) -> bool:
             expected = os.environ.get('AUTOMATICA_API_KEY', '') or _load_api_key_from_settings()
             if not expected:
-                return True  # no key configured → open
-            # Accept Bearer token in Authorization header or legacy X-API-Key
+                # No key configured: only allow loopback callers (startup
+                # gate already prevents non-loopback bind without a key,
+                # but defence-in-depth here too).
+                client_host = (websocket.client.host if websocket.client else '')
+                return client_host in ('127.0.0.1', '::1', 'localhost')
+            # Accept Bearer header, X-API-Key header, OR ?token= query param.
+            # Browser WebSocket clients can't set custom headers, so ?token=
+            # is the only option for them.
+            token = ''
             auth_header = websocket.headers.get('authorization', '')
             if auth_header.startswith('Bearer '):
                 token = auth_header[7:]
-                if token == expected:
-                    return True
-                # C-16: accept session tokens
-                if token in _sessions and _sessions[token] > _t.monotonic():
-                    return True
+            if not token:
+                token = (websocket.headers.get('x-api-key', '')
+                         or websocket.query_params.get('token', ''))
+            if not token:
                 return False
-            provided = websocket.headers.get('x-api-key', '')
-            return provided == expected
+            if token == expected:
+                return True
+            # C-16: accept session tokens
+            sess_exp = _sessions.get(token)
+            if sess_exp and sess_exp > _t.monotonic():
+                return True
+            return False
 
         # ── C-16: POST /api/auth/login ────────────────────────────────────────
         @app.post('/api/auth/login')

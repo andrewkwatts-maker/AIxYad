@@ -266,6 +266,25 @@ CREATE TABLE IF NOT EXISTS auth_audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_aal_event ON auth_audit_log(event);
 CREATE INDEX IF NOT EXISTS idx_aal_created ON auth_audit_log(created_at);
+
+-- Cross-project file locks: per-project file_locks table can't see locks
+-- held by other projects on the same OS file. This global table makes
+-- locks visible across all projects so two projects targeting the same
+-- shared file (e.g. a vendored library) can't both edit it concurrently.
+-- Keyed on the canonical absolute path.
+CREATE TABLE IF NOT EXISTS file_locks_global (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    abs_path        TEXT NOT NULL UNIQUE,
+    project         TEXT NOT NULL DEFAULT '',
+    locked_by       TEXT NOT NULL,
+    session_id      TEXT DEFAULT '',
+    task_id         INTEGER DEFAULT NULL,
+    content_hash    TEXT DEFAULT '',
+    locked_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_flg_path ON file_locks_global(abs_path);
+CREATE INDEX IF NOT EXISTS idx_flg_agent ON file_locks_global(locked_by);
+CREATE INDEX IF NOT EXISTS idx_flg_project ON file_locks_global(project);
 """
 
 # ── Project DB Schema ───────────────────────────────────────────────
@@ -2821,6 +2840,89 @@ def get_all_versions_by_persistent_id(conn, persistent_id: str) -> list:
 # ═══════════════════════════════════════════════════════════════════
 # File Locking — exclusive access while editing
 # ═══════════════════════════════════════════════════════════════════
+
+
+def _abs_path_for_lock(file_path: str, project_dir=None) -> str:
+    """Return the canonical absolute path used as the lock key in file_locks_global."""
+    from pathlib import Path as _P
+    p = _P(file_path)
+    if not p.is_absolute() and project_dir:
+        p = _P(project_dir) / file_path
+    try:
+        return str(p.resolve()).replace('\\', '/')
+    except Exception:
+        return str(p).replace('\\', '/')
+
+
+def lock_file_global(gconn, file_path: str, agent: str,
+                     project: str = '', session_id: str = '',
+                     task_id: int = None, project_dir=None) -> dict:
+    """Cross-project lock acquired in the GLOBAL DB (file_locks_global table).
+    Visible to every project — the per-project lock_file table only sees
+    locks within one project.
+    """
+    import hashlib
+    from pathlib import Path as _P
+    abs_path = _abs_path_for_lock(file_path, project_dir)
+    existing = gconn.execute(
+        "SELECT * FROM file_locks_global WHERE abs_path = ?", (abs_path,)
+    ).fetchone()
+    if existing:
+        if existing['locked_by'] == agent and existing['project'] == project:
+            return {'locked': True, 'holder': agent, 'hash': existing['content_hash'],
+                    'cross_project': False}
+        return {'locked': False, 'holder': existing['locked_by'],
+                'project': existing['project'], 'locked_at': existing['locked_at'],
+                'cross_project': existing['project'] != project}
+    content_hash = ''
+    try:
+        fp = _P(abs_path)
+        if fp.is_file():
+            content_hash = hashlib.sha256(fp.read_bytes()).hexdigest()
+    except Exception:
+        pass
+    gconn.execute(
+        "INSERT INTO file_locks_global "
+        "(abs_path, project, locked_by, session_id, task_id, content_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (abs_path, project, agent, session_id, task_id, content_hash),
+    )
+    gconn.commit()
+    return {'locked': True, 'holder': agent, 'hash': content_hash,
+            'cross_project': False}
+
+
+def unlock_file_global(gconn, file_path: str, agent: str = '',
+                       project_dir=None) -> bool:
+    abs_path = _abs_path_for_lock(file_path, project_dir)
+    if agent:
+        gconn.execute(
+            "DELETE FROM file_locks_global WHERE abs_path = ? AND locked_by = ?",
+            (abs_path, agent),
+        )
+    else:
+        gconn.execute("DELETE FROM file_locks_global WHERE abs_path = ?", (abs_path,))
+    gconn.commit()
+    return True
+
+
+def check_file_lock_global(gconn, file_path: str, project_dir=None) -> Optional[dict]:
+    abs_path = _abs_path_for_lock(file_path, project_dir)
+    row = gconn.execute(
+        "SELECT * FROM file_locks_global WHERE abs_path = ?", (abs_path,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def force_unlock_stale_global(gconn, timeout_minutes: int = 30) -> int:
+    """Sweep stale cross-project locks (e.g. after a crashed agent run)."""
+    cur = gconn.execute(
+        "DELETE FROM file_locks_global "
+        "WHERE datetime(locked_at, '+' || ? || ' minutes') < datetime('now')",
+        (timeout_minutes,),
+    )
+    gconn.commit()
+    return cur.rowcount
 
 
 def lock_file(conn, file_path: str, agent: str, session_id: str = '',

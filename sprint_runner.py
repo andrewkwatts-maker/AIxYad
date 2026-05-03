@@ -207,6 +207,15 @@ class SprintRunner:
         self.provider = provider
         self.provider_config = provider_config
         self.max_parallel = max(1, max_parallel)
+
+        # Agentic CLIs (Claude in -p mode) do their own direct file I/O
+        # without going through the protocol's lock_file action, so the
+        # advisory file_locks table can't protect against parallel agents
+        # racing on the same OS file. Force max_parallel=1 in this mode.
+        if (provider_config or {}).get('mode', '').lower() == 'agentic' and self.max_parallel > 1:
+            _log(f"[GUARD] provider_config.mode=agentic — forcing max_parallel "
+                 f"from {self.max_parallel} to 1 (agentic CLI bypasses advisory locks)")
+            self.max_parallel = 1
         self.max_iterations_per_task = max_iterations_per_task
         self.log_dir = log_dir
         self.pipeline_config = pipeline_config or {}

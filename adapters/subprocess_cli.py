@@ -296,6 +296,73 @@ def _classify_zero_diff_summary(summary: str) -> str:
     return 'unknown'
 
 
+# ── WF-8 v3: file-existence verification ────────────────────────────────────
+# When Claude claims "verified_complete", extract the file paths it mentions
+# from the prompt + summary and verify they ACTUALLY EXIST on disk. Catches
+# the L0130-GEO-1 hallucination pattern: Claude said "existing files satisfy
+# the spec" but the files (engine/location/GeoProjection.{hpp,cpp}) didn't
+# exist. Without verification we'd trust the claim.
+
+# Match path-like tokens with at least one '/' or '\' and a file extension.
+# Skip URLs (http://) and Windows drive letters at start (handled separately).
+_PATH_RE = re.compile(
+    r'(?<![A-Za-z0-9_])'                         # no alphanumeric just before
+    r'((?:[A-Za-z]:[\\/])?'                      # optional Windows drive
+    r'[\w.\-]+(?:[\\/][\w.\-]+){1,8})'           # 2-8 path segments
+    r'\.([A-Za-z0-9]{1,5})\b'                    # extension
+)
+
+
+def _extract_referenced_paths(*texts: str) -> list[str]:
+    """Find plausible file paths in the given strings."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for text in texts:
+        if not text:
+            continue
+        for m in _PATH_RE.finditer(text):
+            p = m.group(0).replace("\\", "/")
+            # Filter junk: URLs, very short paths, common false positives
+            if p.startswith(("http://", "https://", "ftp://")):
+                continue
+            if len(p) < 5:
+                continue
+            if p.lower() in ("e.g./foo", "x/y.z"):
+                continue
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+    return out
+
+
+def _verify_referenced_files_exist(paths: list[str], cwd: str | None) -> tuple[bool, list[str], list[str]]:
+    """For each path in *paths*, check existence ONLY against *cwd*-relative
+    or absolute resolutions. Never falls back to Path.cwd() — that would let
+    files from a sibling project (e.g. Automatica/engine/foo) accidentally
+    match a Nova3D-relative reference like 'engine/foo'.
+
+    Returns (all_exist, exists_list, missing_list).
+
+    If *cwd* is None we cannot meaningfully verify; treat as inconclusive
+    (return all_exist=False so the caller defaults to need_help).
+    """
+    if not paths:
+        return (True, [], [])  # vacuously true
+    if not cwd:
+        return (False, [], list(paths))  # can't verify → conservative
+    exists: list[str] = []
+    missing: list[str] = []
+    cwd_path = Path(cwd)
+    for p in paths:
+        pp = Path(p)
+        candidate = pp if pp.is_absolute() else (cwd_path / pp)
+        if candidate.exists():
+            exists.append(p)
+        else:
+            missing.append(p)
+    return (len(missing) == 0, exists, missing)
+
+
 # ── Adapter ─────────────────────────────────────────────────────────────────
 
 class SubprocessCliAdapter(BaseAdapter):
@@ -385,24 +452,60 @@ class SubprocessCliAdapter(BaseAdapter):
                     if not files_changed:
                         verdict = _classify_zero_diff_summary(output)
                         if verdict == 'verified_complete':
-                            # Claude reports the work is genuinely already done.
-                            # Honour that — mark step_done with an audit note.
+                            # WF-8 v3: verify the files Claude mentions ACTUALLY EXIST.
+                            # Catches the L0130-GEO-1 pattern where Claude claimed
+                            # "existing files satisfy the spec" but the files were
+                            # missing entirely.
+                            referenced = _extract_referenced_paths(prompt, output)
+                            all_exist, exists, missing = _verify_referenced_files_exist(
+                                referenced, cwd
+                            )
+                            if not all_exist:
+                                log.warning(
+                                    "FALSE-COMPLETE (hallucinated existence): Claude "
+                                    "claims complete but %d/%d referenced files are "
+                                    "missing: %s",
+                                    len(missing), len(referenced),
+                                    missing[:5],
+                                )
+                                log_path = _write_failure_log(
+                                    safe_executable, rc, stdout, stderr, safe_prompt
+                                )
+                                return {
+                                    "action": "need_help",
+                                    "params": {
+                                        "reason": (
+                                            "Hallucinated 'verified-complete': "
+                                            f"{len(missing)} of {len(referenced)} files "
+                                            f"Claude referenced do not exist on disk. "
+                                            f"Missing: {', '.join(missing[:8])}. "
+                                            f"Summary: {output[-300:]}"
+                                        ),
+                                    },
+                                    "reasoning": (
+                                        f"WF-8 v3 file-existence check failed "
+                                        f"(log={log_path.name})."
+                                    ),
+                                }
                             log.info(
-                                "VERIFIED-COMPLETE: exit 0 with no changes but summary "
-                                "asserts existing implementation already meets criteria"
+                                "VERIFIED-COMPLETE: exit 0 with no changes; %d "
+                                "referenced files exist on disk; summary asserts "
+                                "criteria met",
+                                len(exists),
                             )
                             return {
                                 "action": "step_done",
                                 "params": {
                                     "summary": (
-                                        "[verified-complete: no new code needed, "
-                                        "existing implementation already satisfies the "
-                                        f"task] {output[-600:]}"
+                                        f"[verified-complete: {len(exists)} files "
+                                        f"exist; existing implementation satisfies "
+                                        f"the task] {output[-500:]}"
                                     ),
                                 },
                                 "reasoning": (
-                                    "WF-8 verified-complete: zero diff + completion "
-                                    "phrases, no blocker phrases."
+                                    "WF-8 v3 verified-complete: zero diff + "
+                                    "completion phrases + all referenced files "
+                                    "exist on disk."
                                 ),
                             }
                         if verdict == 'blocked':

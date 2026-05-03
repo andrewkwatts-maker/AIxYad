@@ -7,6 +7,7 @@ Every action is checked against permissions before execution.
 Results include full file contents (for reads/searches) so the AI gets context.
 """
 
+import contextlib
 import fnmatch
 import json
 import os
@@ -17,6 +18,61 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+# OS-level file mutex (cross-process, cross-thread) to add a hard layer on
+# top of the advisory file_locks table. Optional dependency: degrades to
+# a no-op if portalocker is missing.
+try:
+    import portalocker as _portalocker
+except ImportError:
+    _portalocker = None
+
+
+@contextlib.contextmanager
+def _os_file_lock(target_path: Path, timeout: float = 30.0):
+    """Acquire an exclusive OS-level lock on a sidecar file, then release.
+    Uses portalocker when available; falls back to a no-op if the optional
+    dependency isn't installed (so this module stays importable everywhere).
+
+    The lock targets <target_path>.lock not the file itself, so concurrent
+    readers of the data file are unaffected and the lock works even when the
+    target file doesn't exist yet (write_file create case).
+    """
+    if _portalocker is None:
+        yield
+        return
+    lock_path = target_path.with_suffix(target_path.suffix + ".lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    # portalocker v3 dropped the timeout kwarg from .lock() in favour of the
+    # Lock context manager. Loop with a short retry instead.
+    import time as _time
+    f = open(lock_path, "a+")
+    deadline = _time.monotonic() + max(0.1, timeout)
+    acquired = False
+    try:
+        while _time.monotonic() < deadline:
+            try:
+                _portalocker.lock(f, _portalocker.LOCK_EX | _portalocker.LOCK_NB)
+                acquired = True
+                break
+            except (_portalocker.exceptions.LockException, OSError):
+                _time.sleep(0.05)
+        if not acquired:
+            # Last attempt: blocking lock (no NB flag) — will wait until OS releases
+            _portalocker.lock(f, _portalocker.LOCK_EX)
+            acquired = True
+        yield
+    finally:
+        if acquired:
+            try:
+                _portalocker.unlock(f)
+            except Exception:
+                pass
+        f.close()
 
 
 try:
@@ -404,7 +460,8 @@ class AgentExecutor:
 
         try:
             full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(content, encoding="utf-8")
+            with _os_file_lock(full_path):
+                full_path.write_text(content, encoding="utf-8")
         except OSError as exc:
             return {"success": False, "message": f"ACTION: write_file {rel_path} — ERROR: {exc}"}
 
@@ -472,7 +529,19 @@ class AgentExecutor:
         new_content = content.replace(old_text, new_text)
 
         try:
-            full_path.write_text(new_content, encoding="utf-8")
+            with _os_file_lock(full_path):
+                # Re-read inside the lock window to defend against any concurrent
+                # write that landed between our earlier read and this edit.
+                fresh_content = full_path.read_text(encoding="utf-8", errors="replace")
+                if fresh_content != content:
+                    return {
+                        "success": False,
+                        "message": (
+                            f"ACTION: edit_file {rel_path} — RACE: file changed "
+                            f"under us between read and write. Re-read and retry."
+                        ),
+                    }
+                full_path.write_text(new_content, encoding="utf-8")
         except OSError as exc:
             return {"success": False, "message": f"ACTION: edit_file {rel_path} — WRITE ERROR: {exc}"}
 

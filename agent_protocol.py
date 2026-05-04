@@ -24,6 +24,25 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
+
+def _format_criteria_bullets(criteria) -> str:
+    """Render acceptance_criteria as a bullet list whether stored as a string
+    or a list. Iterating a bare string yields characters, which has produced
+    one-character-per-bullet prompts that triggered Claude's safety filter
+    (refusal with 'violates Usage Policy'). Always normalise to list-of-lines."""
+    if not criteria:
+        return "  (none specified)"
+    if isinstance(criteria, list):
+        items = [str(c).strip() for c in criteria if str(c).strip()]
+    else:
+        text = str(criteria).strip()
+        # If it's a multi-line string, treat each non-empty line as a bullet.
+        # Otherwise emit the whole string as a single bullet.
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        items = lines if len(lines) > 1 else [text]
+    return '\n'.join(f"  - {c}" for c in items) if items else "  (none specified)"
+
+
 from agent_executor import AgentExecutor
 from ai_adapters import get_adapter
 from db_actions import DbActionHandler
@@ -137,6 +156,15 @@ class AgentProtocol:
 
         # Load adapter
         self.adapter = get_adapter(provider, provider_config)
+
+        # CRITICAL: pin the adapter's subprocess cwd to the project directory.
+        # Without this the Claude CLI subprocess inherits Automatica's own cwd
+        # and edits files in the wrong repository — every "file already exists"
+        # / "file does not exist" claim from Claude was decided against the
+        # WRONG working tree. Always force the agent to operate inside
+        # *project_dir* so its tool calls see the target codebase.
+        if hasattr(self.adapter, 'config') and isinstance(self.adapter.config, dict):
+            self.adapter.config.setdefault('cwd', str(self.project_dir))
 
         # Agentic-mode adapters (e.g. Claude CLI in -p mode) do their own
         # tool work outside the executor, so the action_log is always empty.
@@ -594,7 +622,7 @@ class AgentProtocol:
                     f"Files changed: {files_changed}\n\n"
                     f"CONFIRM: Are ALL acceptance criteria truly satisfied?\n"
                     f"Acceptance criteria:\n" +
-                    '\n'.join(f"  - {c}" for c in task.get('acceptance_criteria', [])) +
+                    _format_criteria_bullets(task.get('acceptance_criteria')) +
                     "\n\nIf YES (all criteria met): respond with {\"action\": \"step_done\", ...}\n"
                     "If NO (something is incomplete or wrong): respond with the action you "
                     "need to do next to fix it."

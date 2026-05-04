@@ -70,6 +70,87 @@ def _get_push_event_fn():
 
 
 # ---------------------------------------------------------------------------
+# Rate-limit sentinel (written by adapters/subprocess_cli.py when the Claude
+# CLI reports "You've hit your limit"). When fresh, abort sprints cleanly so
+# we don't burn complexity bumps on what is really a "come back later" state.
+# ---------------------------------------------------------------------------
+
+RATE_LIMIT_COOLDOWN_SEC = 30 * 60  # minimum floor — actual cooldown extends
+                                   # to the parsed reset time when available
+
+
+def _parse_reset_at_to_dt(reset_at_text: str, now: datetime) -> Optional[datetime]:
+    """Parse Claude CLI's 'resets X' text into the next wall-clock occurrence.
+
+    Examples accepted: '7:50am', '12:30pm', '9am', '2:30 PM'. Returns the next
+    future datetime matching that h:mm am/pm. Returns None if unparseable."""
+    if not reset_at_text:
+        return None
+    import re as _re
+    m = _re.match(r"\s*(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\s*",
+                  reset_at_text.strip(), _re.IGNORECASE)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+    is_pm = m.group(3).lower() == 'p'
+    if hour == 12:
+        hour = 12 if is_pm else 0
+    elif is_pm:
+        hour += 12
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now:
+        # Already past today — assume tomorrow.
+        from datetime import timedelta as _td
+        candidate = candidate + _td(days=1)
+    return candidate
+
+
+def _check_rate_limit_sentinel() -> Optional[str]:
+    """If the rate-limit sentinel says we should still be cooling off, return
+    a human-readable skip reason; else None.
+
+    Cooldown extends to the parsed reset time (from Claude's reset-text) when
+    available, with a 30-min floor. This prevents a one-shot run during the
+    rate-limit window from re-attempting and writing a fresh sentinel just
+    after the previous cooldown expires — which produced the 4-hour rate-limit
+    period observed earlier in this session."""
+    base = Path(os.environ.get("AUTOMATICA_HOME") or
+                Path(__file__).resolve().parent)
+    path = base / ".automatica" / "rate_limited.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        last = data.get("last_detected_at") or ""
+        if not last:
+            return None
+        last_dt = datetime.fromisoformat(last)
+        now = datetime.now()
+        age = (now - last_dt).total_seconds()
+        reset_text = data.get("reset_at_text") or ""
+
+        # Compute deadline as max(last_detected + 30min floor, parsed reset).
+        floor_deadline = last_dt.timestamp() + RATE_LIMIT_COOLDOWN_SEC
+        parsed_reset = _parse_reset_at_to_dt(reset_text, last_dt)
+        parsed_ts = parsed_reset.timestamp() if parsed_reset else 0
+        deadline_ts = max(floor_deadline, parsed_ts)
+        secs_left = deadline_ts - now.timestamp()
+
+        if secs_left > 0:
+            mins_left = int(secs_left / 60)
+            hits = data.get("hit_count") or 0
+            return (f"rate-limited (resets {reset_text or 'unknown'}, "
+                    f"{hits} hit(s), ~{mins_left}m remaining; clear "
+                    f"{path} to override)")
+    except Exception:
+        return None
+    return None
+
+
+# ---------------------------------------------------------------------------
 # S3-W05: Provider health check (module-level)
 # ---------------------------------------------------------------------------
 
@@ -80,7 +161,17 @@ def _check_provider_health(provider_config: dict) -> tuple:
     For HTTP providers, pings the endpoint (up to 3 attempts).
     Returns (True, latency_ms) on success, (False, -1) on failure.
     """
-    provider_type = provider_config.get('provider_type', '')
+    provider_type = (provider_config or {}).get('provider_type', '')
+
+    # Bug fix: an empty provider_type means the provider isn't configured
+    # (e.g. the CLI was invoked with --provider Claude-Opus but no row by that
+    # name exists in the global DB, so get_provider_config returned {}).
+    # Previously this fell through to the HTTP path and probed
+    # http://localhost:11434/api/tags, which an unrelated local Ollama
+    # instance would happily answer — masking the real config error as a
+    # 5ms "Provider health OK" line. Refuse to call it healthy.
+    if not provider_type:
+        return False, -1
 
     # subprocess_cli: verify the executable is on PATH or filesystem
     if provider_type == 'subprocess_cli':
@@ -444,6 +535,17 @@ class SprintRunner:
 
         Returns SprintResult with per-task outcomes.
         """
+        # Rate-limit cool-down: if the Claude CLI hit a subscription limit
+        # within the last RATE_LIMIT_COOLDOWN_SEC, abort the sprint cleanly
+        # rather than churning every task into a wasted retry. The sentinel is
+        # written by adapters/subprocess_cli.py.
+        rl_skip = _check_rate_limit_sentinel()
+        if rl_skip:
+            _log(f"[EXEC] Skipping sprint #{sprint_number} — {rl_skip}")
+            return SprintResult(sprint_number=sprint_number, goal="",
+                                 status="rate_limited",
+                                 errors=[rl_skip])
+
         conn = self._get_main_project_conn()
         sprint_tasks = get_sprint_tasks(conn, sprint_number)
 
@@ -807,10 +909,24 @@ class SprintRunner:
             task_log_dir = self.log_dir / f"sprint_{sprint_number}" / display_id
             task_log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create protocol instance (each task gets its own)
-        # provider arg to AgentProtocol must be the adapter TYPE (e.g. 'subprocess_cli'),
-        # not the provider name (e.g. 'Claude-Sonnet').
-        _adapter_type = (routed_provider_config or {}).get('provider_type', self.provider)
+        # Create protocol instance (each task gets its own).
+        # provider arg to AgentProtocol must be the adapter TYPE (e.g.
+        # 'subprocess_cli'), not the provider name (e.g. 'Claude-Sonnet').
+        # Bug fix: previously this fell back to `self.provider` (the friendly
+        # name) when the routed config was empty, which silently passed an
+        # invalid name to get_adapter() and crashed every task in ~10s. Now
+        # raise loudly so misconfigured providers (e.g. a CLI flag pointing
+        # at a provider name that doesn't exist in the global DB) surface
+        # immediately instead of producing a 15-sprint zero-velocity run.
+        _adapter_type = (routed_provider_config or {}).get('provider_type', '')
+        if not _adapter_type:
+            raise RuntimeError(
+                f"Provider {self.provider!r} has no usable provider_type "
+                f"(provider_config is empty or missing the 'provider_type' "
+                f"key). Check that a row named {self.provider!r} exists in "
+                f"the global providers table and has provider_type set "
+                f"(e.g. 'subprocess_cli')."
+            )
         protocol = AgentProtocol(
             provider=_adapter_type,
             provider_config=routed_provider_config,  # S3-W06: complexity-routed config
@@ -1272,19 +1388,25 @@ class SprintRunner:
             self._log_ceremony(conn, sprint_id, "retro", "\n".join(retro_items))
 
         # Move failed tasks back to backlog for next sprint, unless they've failed too often.
-        # Count how many sprints have attempted this task (via sprint_tasks table).
-        MAX_TASK_ATTEMPTS = 3
+        # Bug fix: previously this counted *historical* sprint_tasks rows
+        # in 'failed'/'blocked' state across all time, which double-counted
+        # with validation.handle_agent_failure's persistent counter and
+        # inflated rapidly (the log showed e.g. "failed 14x" right after a
+        # task's 1st real failure in this cycle, because 13 sprint_tasks
+        # rows were left over from previous days). Use tasks.failure_count
+        # — the same counter validation.handle_agent_failure manages, which
+        # resets to 0 on success and is the authoritative consecutive-fail
+        # count. Threshold lifted to MAX_TASK_RETRIES so the two layers agree.
+        from automatica_db import get_task_failure_count as _get_task_fc
+        try:
+            from validation import MAX_TASK_RETRIES as _MAX_RETRIES
+        except ImportError:
+            _MAX_RETRIES = 5
         for tr in sprint_result.task_results:
             if not tr.success:
                 try:
-                    # Count how many times this task has been attempted across all sprints
-                    attempts = conn.execute(
-                        "SELECT COUNT(*) FROM sprint_tasks st "
-                        "JOIN tasks t ON t.id = st.task_id "
-                        "WHERE t.display_id = ? AND st.status IN ('failed','blocked')",
-                        (tr.task_display_id,)
-                    ).fetchone()[0]
-                    if attempts >= MAX_TASK_ATTEMPTS:
+                    attempts = _get_task_fc(conn, tr.task_display_id) or 0
+                    if attempts >= _MAX_RETRIES:
                         _log(f"[PLAN] {tr.task_display_id} failed {attempts}x — marking abandoned")
                         update_task(conn, tr.task_display_id, status="failed")
                     else:
@@ -1442,6 +1564,16 @@ class SprintRunner:
         for step in steps:
             if self._stop_requested:
                 _log("[SPRINT] Stop requested — aborting pipeline")
+                break
+            # Rate-limit mid-pipeline: if the builtin task-execution phase wrote
+            # a fresh sentinel (Claude's subscription quota hit), skip the
+            # remaining cmd/review phases. Build/test verification on a clean
+            # tree takes 5–15 min and provides zero useful signal when the
+            # task itself never executed — observed sprint #2654 burnt 10 min
+            # on cmake+ctest after a rate-limit hit.
+            rl_skip = _check_rate_limit_sentinel()
+            if rl_skip:
+                _log(f"[SPRINT] {rl_skip} — skipping remaining phases")
                 break
             self._execute_phase(step)
 
@@ -1779,7 +1911,11 @@ class SprintRunner:
             return
 
         cwd = config.get("cwd", str(self.project_dir))
-        timeout = config.get("timeout", 300)
+        # 5 min was too tight for engine-class projects: sprint #2654 timed out
+        # mid-build on Nova3D, then a clean reconfigure took another 5 min and
+        # the retry hit the same wall. 10 min covers a full clean configure
+        # for typical C++ engines while still bounding runaway builds.
+        timeout = config.get("timeout", 600)
 
         # --- Handle "cd <subdir> && <real_command>" compound commands --------
         # subprocess.run() without shell=True cannot handle "cd X && Y", so
@@ -2329,12 +2465,42 @@ def _log(msg: str):
     print(f"[{ts}] {safe}", file=sys.stderr, flush=True)
 
 
-def _next_sprint_number(conn: sqlite3.Connection) -> int:
-    """Determine the next sprint number — guaranteed to not already exist in the DB."""
+def _next_sprint_number(conn: sqlite3.Connection, *,
+                        reuse_zero_velocity: bool = True) -> int:
+    """Determine the sprint number for the next run.
+
+    By default (``reuse_zero_velocity=True``), if the most recent sprint
+    completed zero tasks (typical of a rate-limit / retry-cap / config
+    failure where the cycle burned a sprint number without making any
+    real progress), reuse that same sprint number so the work-in-flight
+    isn't fragmented across N sprint records that achieved nothing.
+
+    With ``reuse_zero_velocity=False`` (legacy behaviour), always advance
+    to ``MAX(sprint_number) + 1``.
+
+    Either way, gaps left by crashed runs are skipped.
+    """
     row = conn.execute("SELECT MAX(sprint_number) FROM sprints").fetchone()
-    candidate = (row[0] or 0) + 1 if row else 1
-    # Guard against gaps from crashed runs: advance until we find a free number
-    while conn.execute("SELECT 1 FROM sprints WHERE sprint_number = ?", (candidate,)).fetchone():
+    last_num = (row[0] or 0) if row else 0
+
+    if reuse_zero_velocity and last_num > 0:
+        # Did the most recent sprint actually complete any tasks?
+        done = conn.execute(
+            "SELECT COUNT(*) FROM sprint_tasks st "
+            "JOIN sprints s ON s.id = st.sprint_id "
+            "WHERE s.sprint_number = ? AND st.status = 'done'",
+            (last_num,),
+        ).fetchone()
+        if (done[0] if done else 0) == 0:
+            # Zero-velocity prior sprint — reuse the number rather than
+            # burning a new one. The next planning pass re-pulls eligible
+            # tasks (typically with bumped complexity from the heal step).
+            return last_num
+
+    candidate = last_num + 1 if last_num else 1
+    while conn.execute(
+        "SELECT 1 FROM sprints WHERE sprint_number = ?", (candidate,)
+    ).fetchone():
         candidate += 1
     return candidate
 

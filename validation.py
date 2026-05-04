@@ -25,7 +25,8 @@ from datetime import datetime
 
 _TRANSIENT_PATTERNS = [
     r'connection (refused|reset|aborted)', r'connectionerror', r'timeout(error)?',
-    r'timed out', r'temporarily unavailable', r'rate limit', r'429',
+    r'timed out', r'temporarily unavailable', r'rate limit', r'rate[-_]?limited',
+    r'429', r"hit your limit",  # Claude CLI subscription-quota message
     r'service unavailable', r'502 bad gateway', r'503 ',
     r'network is unreachable', r'name resolution', r'dns',
     r'broken pipe',

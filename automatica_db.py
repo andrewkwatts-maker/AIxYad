@@ -1692,7 +1692,14 @@ def create_task(
     row = conn.execute(
         "SELECT id, display_id FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()
-    return dict(row)
+    # Tolerant of either Row factory or default tuple cursor — without this
+    # `dict(tuple)` raises TypeError, breaking callers that build a fresh
+    # connection without setting row_factory (e.g. seed scripts).
+    if isinstance(row, sqlite3.Row):
+        return dict(row)
+    if row is None:
+        return {"id": task_id, "display_id": ""}
+    return {"id": row[0], "display_id": row[1]}
 
 
 def update_task(conn: sqlite3.Connection, task_display_id: str, **fields) -> bool:
@@ -3909,7 +3916,37 @@ def create_sprint(
     name: str = "",
     goal: str = "",
 ) -> dict:
-    """Create a new sprint. Returns {id, sprint_number}."""
+    """Create or reuse a sprint by number. Returns {id, sprint_number}.
+
+    When sprint_runner._next_sprint_number(reuse_zero_velocity=True) finds the
+    most recent sprint achieved zero tasks (rate-limit, retry-cap, or config
+    failure), it returns that same number so the work-in-flight isn't
+    fragmented. Without this reuse-aware INSERT we hit a UNIQUE constraint and
+    crash planning. If the sprint already exists, reset its status/goal so it
+    can be re-planned cleanly.
+    """
+    existing = conn.execute(
+        "SELECT id FROM sprints WHERE sprint_number = ?", (sprint_number,)
+    ).fetchone()
+    if existing:
+        sprint_id = existing["id"] if isinstance(existing, sqlite3.Row) else existing[0]
+        conn.execute(
+            "UPDATE sprints SET status='planning', "
+            "name = CASE WHEN ? != '' THEN ? ELSE name END, "
+            "goal = CASE WHEN ? != '' THEN ? ELSE goal END, "
+            "updated_at = datetime('now') "
+            "WHERE id = ?",
+            (name, name, goal, goal, sprint_id),
+        )
+        # Clear non-completed sprint_tasks so re-planning starts from a clean
+        # slate. We preserve 'done' rows for the velocity-history record.
+        conn.execute(
+            "DELETE FROM sprint_tasks WHERE sprint_id = ? AND status != 'done'",
+            (sprint_id,),
+        )
+        conn.commit()
+        return {"id": sprint_id, "sprint_number": sprint_number}
+
     cur = conn.execute("""
         INSERT INTO sprints (sprint_number, name, goal)
         VALUES (?, ?, ?)

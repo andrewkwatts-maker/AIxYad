@@ -182,6 +182,11 @@ class AgentExecutor:
         "query_sprint_summary": "can_search",
         "query_history": "can_search",
         "query_task_timeline": "can_search",
+        # File ops added 2026-05-06: copy + soft-delete-with-backup + notes
+        "copy_file":              "can_write_file",
+        "discard_file":           "can_write_file",  # soft delete to _Discarded/
+        "restore_file":           "can_write_file",
+        "take_note":              "can_write_file",  # writes to .automatica/notes/
         # DB mutation actions (write)
         "update_task": "can_write_file",
         "add_task": "can_write_file",
@@ -248,10 +253,19 @@ class AgentExecutor:
         # land in this queue and the SprintRunner drains it at sprint end —
         # change-driven docstring/folder/README summary refresh.
         self._summary_indexer = None  # type: ignore[assignment]
+        # Display ID of the task currently running. Used by take_note to
+        # route entries to the right notepad and by _build_prompt to inject
+        # the task's persistent notes into every iteration.
+        self._current_task_id: str = ""
 
     def set_summary_indexer(self, indexer) -> None:
         """Attach a SummaryIndexer so file-mutating actions auto-enqueue."""
         self._summary_indexer = indexer
+
+    def set_current_task_id(self, task_id: str) -> None:
+        """Tell the executor which task is currently running, so take_note
+        and the auto-injected notepad land on the right per-task file."""
+        self._current_task_id = (task_id or "").strip()
 
     def set_db_handler(self, handler, actor: str = '', session_id: str = ''):
         """Attach a DbActionHandler for DB action routing and action logging."""
@@ -597,6 +611,110 @@ class AgentExecutor:
                 f"{abs(delta)} lines {'added' if delta >= 0 else 'removed'})"
             ),
         }
+
+    def _do_copy_file(self, params: dict) -> dict:
+        """Copy a file inside the project. Both src and dst are validated by
+        _check_path so neither can escape project_dir or land inside a
+        forbidden system directory (.git, .automatica, venv, etc.)."""
+        src = params.get("src", "") or params.get("source", "")
+        dst = params.get("dst", "") or params.get("dest", "") or params.get("destination", "")
+        if not src or not dst:
+            return {"success": False,
+                    "message": "ACTION: copy_file — ERROR: src and dst are both required"}
+        for label, p in (("src", src), ("dst", dst)):
+            check = self._check_path(p)
+            if not check["safe"]:
+                return {"success": False,
+                        "message": f"ACTION: copy_file {label}={p} — DENIED ({check['reason']})"}
+        src_full = (self.project_dir / src).resolve()
+        dst_full = (self.project_dir / dst).resolve()
+        if not src_full.is_file():
+            return {"success": False,
+                    "message": f"ACTION: copy_file {src} — SOURCE NOT FOUND"}
+        if dst_full.exists() and not params.get("overwrite", False):
+            return {"success": False,
+                    "message": (f"ACTION: copy_file {src} -> {dst} — DEST EXISTS "
+                                f"(pass overwrite=true to replace)")}
+        try:
+            dst_full.parent.mkdir(parents=True, exist_ok=True)
+            with _os_file_lock(dst_full):
+                import shutil as _shutil
+                _shutil.copy2(src_full, dst_full)
+        except OSError as exc:
+            return {"success": False,
+                    "message": f"ACTION: copy_file {src} -> {dst} — ERROR: {exc}"}
+        # Enqueue for change-driven summary refresh
+        if self._summary_indexer is not None:
+            try:
+                self._summary_indexer.enqueue(dst_full)
+            except Exception:
+                pass
+        return {"success": True,
+                "message": f"ACTION: copy_file {src} -> {dst} — SUCCESS"}
+
+    def _do_take_note(self, params: dict) -> dict:
+        """Append a note to the agent's persistent task scratchpad.
+
+        Notes are stored at ``.automatica/notes/<task_id>.md`` (private,
+        gitignored, never executed) and auto-injected into the prompt for
+        every iteration of the same task. Use this when:
+          * you've made a non-obvious decision you'll forget
+          * you've mapped out remaining work and don't want to re-derive it
+          * you noticed something about the codebase worth remembering for
+            the next iteration on this same task
+
+        Params:
+          text   — the note body.
+          mode   — "append" (default) or "replace".
+        """
+        text = (params.get("text") or "").strip()
+        if not text:
+            return {"success": False,
+                    "message": "ACTION: take_note — ERROR: text is required"}
+        mode = (params.get("mode") or "append").lower()
+        if mode not in ("append", "replace"):
+            return {"success": False,
+                    "message": f"ACTION: take_note — ERROR: mode must be 'append' or 'replace' (got {mode!r})"}
+
+        # Identify the current task. The agent can override via the task_id
+        # param; otherwise we use the executor's tracked current task. Falls
+        # back to "shared" so notes never get silently lost.
+        task_id = (params.get("task_id") or
+                   self._current_task_id or
+                   "shared")
+        # Strip path-unsafe chars from task_id
+        import re as _re
+        safe_id = _re.sub(r"[^A-Za-z0-9_.-]", "_", str(task_id))[:80] or "shared"
+
+        notes_dir = self.project_dir / ".automatica" / "notes"
+        try:
+            notes_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return {"success": False,
+                    "message": f"ACTION: take_note — ERROR: cannot create notes dir: {exc}"}
+        notes_path = notes_dir / f"{safe_id}.md"
+
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"\n## {stamp}\n{text}\n"
+        try:
+            if mode == "replace":
+                notes_path.write_text(f"# Notes for {safe_id}\n{entry}",
+                                       encoding="utf-8")
+            else:
+                if notes_path.is_file():
+                    with notes_path.open("a", encoding="utf-8") as f:
+                        f.write(entry)
+                else:
+                    notes_path.write_text(f"# Notes for {safe_id}\n{entry}",
+                                           encoding="utf-8")
+        except OSError as exc:
+            return {"success": False,
+                    "message": f"ACTION: take_note — ERROR: write failed: {exc}"}
+        size = notes_path.stat().st_size
+        return {"success": True,
+                "message": (f"ACTION: take_note ({mode}, task={safe_id}) — SUCCESS "
+                            f"(notepad now {size}B). The next iteration's "
+                            f"prompt will include all notes for this task.")}
 
     # ── Live Scanner Actions ──────────────────────────────────────────────
 
@@ -1499,8 +1617,32 @@ class AgentExecutor:
         except Exception as exc:
             return {"success": False, "message": f"ACTION: store_handoff — ERROR: {exc}"}
 
+    # Path components that are ALWAYS off-limits to the agent regardless of
+    # permissions. These are system/tool dirs that an agent has no legitimate
+    # reason to write into — touching them silently corrupts state (eg.
+    # .git index) or breaks Automatica's own bookkeeping (.automatica DB).
+    # Read-only access is also blocked because the agent shouldn't be
+    # treating these as data sources either.
+    HARD_FORBIDDEN_PATH_PARTS = frozenset({
+        ".git",
+        ".automatica",   # per-project Automatica state (DB, locks, sentinels)
+        ".venv", "venv", "env", "virtualenv",  # Python virtual envs
+        "node_modules",
+        "__pycache__",
+        ".idea", ".vscode",
+        ".pytest_cache", ".mypy_cache", ".ruff_cache",
+        ".tox", ".nox",
+        "site-packages",
+    })
+
     def _check_path(self, path: str) -> dict:
-        """Verify a path is safe: inside project_dir and not blocked."""
+        """Verify a path is safe: inside project_dir, not in a hard-forbidden
+        system directory, and not matching any user-configured blocked glob.
+
+        ``HARD_FORBIDDEN_PATH_PARTS`` is non-overridable — even with
+        ``allowed_paths`` set the agent cannot reach into ``.git`` /
+        ``.automatica`` / ``venv`` / etc. Those are tool/state directories
+        and any 'edit' there is almost certainly a corruption."""
         try:
             resolved = (self.project_dir / path).resolve()
         except (ValueError, OSError):
@@ -1508,11 +1650,22 @@ class AgentExecutor:
 
         # Must be inside project directory
         try:
-            resolved.relative_to(self.project_dir)
+            rel = resolved.relative_to(self.project_dir)
         except ValueError:
             return {"safe": False, "reason": f"path escapes project directory: {path}"}
 
-        # Check blocked paths (glob patterns)
+        # Hard-forbidden system directories (always blocked)
+        for part in rel.parts:
+            if part in self.HARD_FORBIDDEN_PATH_PARTS:
+                return {
+                    "safe": False,
+                    "reason": (f"path traverses forbidden system directory "
+                               f"'{part}/' — agent cannot read or write "
+                               f"inside .git, .automatica, venv, node_modules, "
+                               f"__pycache__, IDE folders, or test caches"),
+                }
+
+        # Check blocked paths (glob patterns) from permissions
         blocked = self.permissions.get("blocked_paths", [])
         for pattern in blocked:
             if fnmatch.fnmatch(str(resolved), pattern) or fnmatch.fnmatch(path, pattern):

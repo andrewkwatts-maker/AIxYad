@@ -94,13 +94,25 @@ Batch rules:
 Choose exactly one action (or one batch) from the available_actions list.
 
 Core actions:
-- "read_file": Read a file. Params: {"path": "relative/path.py"}
-- "write_file": Create or overwrite a file. ALWAYS include overwrite:true. Params: {"path": "relative/path.py", "content": "...", "overwrite": true}
-- "edit_file": Replace EXACT text in existing file. Params: {"path": "relative/path.py", "old_text": "exact text", "new_text": "replacement"}
+- "read_file":  Read a file. Params: {"path": "relative/path.py"}
+- "write_file": Create / overwrite a file. Always pass overwrite:true. Params: {"path": "...", "content": "...", "overwrite": true}
+- "edit_file":  Replace EXACT text. Params: {"path": "...", "old_text": "...", "new_text": "..."}
+- "copy_file":  Duplicate a file inside the project. Params: {"src": "...", "dst": "...", "overwrite": false}
+- "discard_file": SOFT-delete (moves to _Discarded/, reversible). Use this instead of `rm`. Params: {"file_path": "...", "reason": "..."}
+- "restore_file": Bring back a discarded file. Params: {"discard_id": ...} OR {"original_path": "..."}
 - "list_files": List files. Params: {"pattern": "src/**/*.py"}
-- "run_command": Run shell command. Params: {"command": "python -m py_compile src/main.py"}
-- "step_done": Task complete. Call this ONCE all criteria are met. Params: {"summary": "what was done"}
-- "need_help": Stuck or blocked. Params: {"reason": "why stuck"}
+- "search":     Regex grep across files. Params: {"pattern": "...", "glob": "*.py"}
+- "find_relevant_files": Rank files by relevance to a free-text query. Params: {"query": "...", "top_k": 10}
+- "get_summary": Read just the docstring/folder summary of a path (cheaper than read_file). Params: {"path": "..."}
+- "run_command": Run an allowed shell command. Chains with && or ; are split into separate subprocess calls. Params: {"command": "..."}
+- "take_note":  Write to your persistent per-task scratchpad. Auto-included in every iteration's prompt for THIS task. Params: {"text": "...", "mode": "append"|"replace"}
+- "screenshot" / "screenshot_window" / "analyze_screenshot": Visual inspection of a running app. See available_actions for params.
+- "step_done":  Task complete. Call this ONCE all criteria are met. Params: {"summary": "what was done"}
+- "need_help":  Stuck or blocked. Params: {"reason": "why stuck"}
+
+NEVER reach into .git, .automatica, venv, .vscode, node_modules, __pycache__,
+or any test cache directory — every path you read or write must be a real
+project source path, and the executor will reject system-directory paths.
 
 CRITICAL WORKFLOW — follow exactly:
 1. Read the task description carefully.
@@ -400,6 +412,17 @@ class BaseAdapter(ABC):
                 parts.append(f"!! BUDGET: {task['_budget_warning']}")
             elif task.get("_budget_note"):
                 parts.append(f"Budget note: {task['_budget_note']}")
+
+        # Auto-injected persistent notepad for this task. Written by the
+        # take_note action; read every iteration so the agent doesn't
+        # re-derive its own plan from scratch each time.
+        notes = request.get("agent_notes")
+        if notes:
+            parts.append("")
+            parts.append("== YOUR PERSISTENT NOTES (from take_note) ==")
+            parts.append(notes.rstrip())
+            parts.append("(Use take_note to add or replace this scratchpad. "
+                          "It's auto-included in every iteration's prompt.)")
 
         task_ctx = request.get('task_context')
         if task_ctx:

@@ -127,6 +127,10 @@ ACTION_SCHEMA = {
     # In-source summary index (summary_indexer.py)
     'get_summary':      {'required': ['path'], 'optional': []},
     'find_relevant_files': {'required': ['query'], 'optional': ['top_k']},
+    # File ops (copy + soft-delete with backup)
+    'copy_file':        {'required': ['src', 'dst'], 'optional': ['overwrite']},
+    # take_note: persistent per-task scratchpad
+    'take_note':        {'required': ['text'], 'optional': ['mode', 'task_id']},
 
     # GUID sections
     'create_section':   {'required': ['description', 'section_type'], 'optional': ['file_path', 'line_start', 'content', 'persistent_id']},

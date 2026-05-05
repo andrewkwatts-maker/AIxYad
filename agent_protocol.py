@@ -121,6 +121,33 @@ AVAILABLE_ACTIONS = [
         "this when planning a task to find which files matter."),
      "params": {"query": "string (free-text, e.g. 'paddle ai tracking')",
                  "top_k": "int (optional, default 10, max 30)"}},
+    {"name": "copy_file", "description": (
+        "Copy a file inside the project. Both src and dst are validated — "
+        "neither may escape the project or land in a forbidden system "
+        "directory (.git, .automatica, venv, etc.)."),
+     "params": {"src": "string (relative source path)",
+                 "dst": "string (relative destination path)",
+                 "overwrite": "bool (optional, default false)"}},
+    {"name": "discard_file", "description": (
+        "Soft-delete a file: moves it to <project>/_Discarded/ with metadata. "
+        "Reversible via restore_file. Use INSTEAD of run_command 'rm' for "
+        "anything you might need to bring back."),
+     "params": {"file_path": "string (relative)",
+                 "reason": "string (optional, why discarded)"}},
+    {"name": "restore_file", "description": (
+        "Bring back a previously-discarded file from _Discarded/. Pass "
+        "either the discard_id (from discard_file's response) or the "
+        "original_path."),
+     "params": {"discard_id": "int (optional)",
+                 "original_path": "string (optional)"}},
+    {"name": "take_note", "description": (
+        "Write to your persistent task scratchpad. The notepad lives at "
+        ".automatica/notes/<task_id>.md and is auto-included in every "
+        "iteration's prompt for this task — use it to remember decisions, "
+        "remaining work, and non-obvious findings so you don't re-derive "
+        "them next iteration."),
+     "params": {"text": "string (note body — be specific)",
+                 "mode": "string (optional, 'append' (default) or 'replace')"}},
     {"name": "search_by_guid", "description": (
         "Find a specific GUID tag across all project files. Returns the file path, "
         "line number, and 10 lines of surrounding context."),
@@ -341,6 +368,25 @@ class AgentProtocol:
         except Exception:
             pass  # wiki summary is best-effort
 
+        # Auto-inject the agent's persistent notepad for this task. Notes are
+        # written by the take_note action to .automatica/notes/<task_id>.md
+        # and read here on every iteration so the agent doesn't lose the
+        # plot when bouncing between iterations or sprints on the same task.
+        try:
+            _tid = task.get('display_id') or ''
+            if _tid:
+                _safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(_tid))[:80]
+                _notes_path = (self.project_dir / ".automatica" / "notes"
+                               / f"{_safe_id}.md")
+                if _notes_path.is_file():
+                    _txt = _notes_path.read_text(encoding="utf-8", errors="replace")
+                    # Cap size so a runaway notepad can't dominate the prompt
+                    if len(_txt) > 4000:
+                        _txt = _txt[:1500] + "\n…[notes truncated]…\n" + _txt[-2500:]
+                    request['agent_notes'] = _txt
+        except Exception:
+            pass  # notepad is best-effort
+
         # Add task dependency chain (ancestors up to 5 levels)
         if self.db_handler and hasattr(self.db_handler, 'pdb') and self.db_handler.pdb:
             try:
@@ -441,6 +487,14 @@ class AgentProtocol:
     def execute_loop(self, task: dict, context: dict,
                      instructions: dict) -> dict:
         """Main loop: build request -> send to AI -> execute action -> repeat until step_done."""
+
+        # Tell the executor which task is running so take_note routes notes
+        # to the right per-task notepad and the auto-injected notes block in
+        # _build_prompt picks up the correct file.
+        try:
+            self.executor.set_current_task_id(task.get('display_id', ''))
+        except Exception:
+            pass
 
         start_time = time.time()
         # Track every successful action outside of history so it survives history trimming.
@@ -742,6 +796,13 @@ class AgentProtocol:
         only ever sees ONE required action at a time and calls step_done after it.
         Falls back to execute_loop() if the description has no numbered steps.
         """
+        # Tell the executor which task is running (drives take_note routing
+        # and the auto-injected notes block in _build_prompt).
+        try:
+            self.executor.set_current_task_id(task.get('display_id', ''))
+        except Exception:
+            pass
+
         description = task.get('description', '')
         steps = self._parse_numbered_steps(description)
 

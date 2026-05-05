@@ -462,6 +462,65 @@ class AgentExecutor:
             ),
         }
 
+    # Subdirectories that ARE allowed for source files. When src/ exists,
+    # source-extension files at the project root are rejected (the model
+    # routinely creates pong.py + paddle.py + ball.py at root despite the
+    # standards saying src/, because Phi4 doesn't reliably follow
+    # multi-paragraph prompt rules — code-level enforcement is the only
+    # thing it actually responds to).
+    SOURCE_DIRS = ("src", "lib", "include", "app", "core")
+    SOURCE_EXTS = (".py", ".pyi", ".cpp", ".hpp", ".h", ".cc", ".c",
+                    ".rs", ".ts", ".tsx", ".js", ".jsx", ".go", ".java",
+                    ".cs", ".kt")
+    BANNED_ROOT_DIRS = (
+        # Sibling folders the model creates instead of using src/. Ban these
+        # at depth 1 (project_dir/<name>/) so the model has to put new code
+        # in src/ instead. Project-name banned dynamically below.
+        "paddle", "paddle_ai", "ball", "game", "gameplay", "engine",
+        "graphics", "ai", "utils", "core_lib", "scoring", "scoring_system",
+    )
+
+    def _layout_violation(self, rel_path: str) -> Optional[str]:
+        """Return a human-readable rejection reason if rel_path violates
+        the inferred project layout, else None. Layout is inferred from
+        what's already on disk: once src/ exists, source files at root
+        are banned; once src/ exists, sibling subfolders for the same
+        concept are banned."""
+        # Normalise to forward slashes for the checks below
+        norm = rel_path.replace("\\", "/").lstrip("./")
+        suffix = Path(norm).suffix.lower()
+        parts = norm.split("/")
+
+        # Project-name self-banned (Pong project must not have pong.py at root)
+        proj_lower = self.project_dir.name.lower()
+        if len(parts) == 1 and norm.lower() == f"{proj_lower}.py":
+            return (f"Layout rule: '{norm}' duplicates the project name as a "
+                    f"root-level entry point. Use src/main.py instead.")
+
+        # Source file at root, AND src/ already exists ⇒ banned
+        if len(parts) == 1 and suffix in self.SOURCE_EXTS:
+            if (self.project_dir / "src").is_dir():
+                return (f"Layout rule: source files belong under src/, not at "
+                        f"the project root. Move '{norm}' to src/{norm} (or "
+                        f"src/<subdir>/{norm}).")
+
+        # Banned sibling subfolders — if the file is under one of these,
+        # AND src/ exists (so there's a canonical place to put it), reject.
+        if len(parts) >= 2 and parts[0].lower() in self.BANNED_ROOT_DIRS:
+            if (self.project_dir / "src").is_dir():
+                return (f"Layout rule: '{parts[0]}/' is a banned sibling of "
+                        f"src/. Put the file under src/{parts[0]}/ or merge "
+                        f"the logic into the existing src/{parts[0]}.py.")
+
+        # Project-name as a subdirectory at root (Pong/main.py) — banned;
+        # use src/main.py.
+        if len(parts) >= 2 and parts[0].lower() == proj_lower:
+            return (f"Layout rule: '{parts[0]}/' (a subfolder named after the "
+                    f"project) is banned. Put '{Path(norm).name}' under src/ "
+                    f"instead.")
+
+        return None
+
     def _do_write_file(self, params: dict) -> dict:
         """Create a new file or overwrite an existing one.
 
@@ -471,6 +530,23 @@ class AgentExecutor:
         """
         rel_path = params.get("path", "")
         content = params.get("content", "")
+
+        # Layout enforcement — must come before the write. Edits to EXISTING
+        # files are fine (handled in _do_edit_file); this only blocks NEW
+        # files at banned paths so the model can't create paddle.py at root
+        # or game/main.py when src/main.py is the canonical entry point.
+        full_path_check = (self.project_dir / rel_path).resolve()
+        if not full_path_check.exists():
+            violation = self._layout_violation(rel_path)
+            if violation:
+                return {
+                    "success": False,
+                    "message": (
+                        f"ACTION: write_file {rel_path} — DENIED ({violation}) "
+                        f"Use edit_file on the existing canonical path, or "
+                        f"write_file to the corrected path."
+                    ),
+                }
 
         full_path = (self.project_dir / rel_path).resolve()
 

@@ -147,11 +147,19 @@ CRITICAL WORKFLOW — follow exactly:
 5. Once ALL acceptance criteria are satisfied → call step_done IMMEDIATELY. Do not do extra work.
 6. If an action fails TWICE with the same error → call need_help, do not retry endlessly.
 
-EXPLORE-BEFORE-MODIFY RULES (critical for working in an existing codebase):
-- ALWAYS start with list_files("**/*.py") or read_file on the specific file before writing anything.
-- NEVER call write_file on a path you haven't confirmed exists (or is genuinely new).
-- Prefer edit_file over write_file for ALL changes to existing files.
-- If the task says "add X to file Y.py" → read Y.py first, then edit_file to insert X.
+EXPLORE-BEFORE-MODIFY RULES (apply to existing codebases — NOT empty projects):
+- For tasks against an EXISTING file, read it first with read_file, then edit_file.
+- For SETUP / CREATE / SCAFFOLD tasks (project structure, new modules, missing
+  files): write_file directly. DO NOT read non-existent files first — that
+  burns iterations. The EXISTING PROJECT FILES list in the prompt is your
+  canonical source of what's already on disk; treat anything not in that
+  list as "doesn't exist; write it" without verifying.
+- HARD CAP: never spend more than 2 iterations on read_file/list_files/search
+  combined before doing real work. Iteration 3 onward must be
+  write_file/edit_file/run_command or step_done.
+- If read_file returns FILE NOT FOUND → call write_file to CREATE the file
+  immediately. Do NOT call read_file on the same path again.
+- Prefer edit_file over write_file for changes to existing files.
 
 FILE WRITE RULES:
 - ALWAYS include "overwrite": true in write_file params. Files may already exist from previous runs.

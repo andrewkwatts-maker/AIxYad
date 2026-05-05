@@ -964,14 +964,27 @@ class AgentProtocol:
         for i in range(max_step_iters):
             remaining = max_step_iters - i
             t = dict(step_task)
-            # Escalating nudges to call step_done. Local models routinely loop
-            # edit_file 4-5x on the same file rather than declaring the step
-            # done — this hand-holds them out of the loop. Triggers once 2+
-            # tool calls have already succeeded for this step.
+            # Escalating nudges. Two things kill local-model steps:
+            #   (a) the model loops edit_file rather than calling step_done
+            #   (b) the model spends the whole budget on read_file / list_files
+            #       / search and never gets to a write
+            # Both get explicit hand-holds:
             if remaining == 1:
                 t['_budget_warning'] = (
                     "LAST ATTEMPT. If the step is done, call step_done NOW. "
                     "Otherwise need_help."
+                )
+            elif productive_actions == 0 and i >= 2:
+                # Pure exploration so far — model is stuck reading nothing.
+                # Common pattern: read_file README.md (FAIL) → search →
+                # read_file pong.py (FAIL) → search → list_files → budget
+                # exhausted, zero writes, step fails.
+                t['_budget_warning'] = (
+                    f"You have spent {i+1} iterations on exploration with "
+                    f"NO writes/edits/commands. STOP exploring. The task "
+                    f"description tells you what to create — write_file "
+                    f"directly. If a path returned FILE NOT FOUND, just "
+                    f"write_file to create it. Do not search again."
                 )
             elif successful_actions >= 2:
                 t['_budget_warning'] = (
@@ -1104,14 +1117,14 @@ class AgentProtocol:
                 continue  # next outer iteration; model sees the error
 
         # Implicit success: budget exhausted but the agent did real work.
-        # Two acceptance paths so different step shapes are covered:
+        # Three acceptance paths so different step shapes are covered:
         #   (a) >=1 productive action (write/edit/run_command) — concrete
         #       state-change happened.
-        #   (b) >=4 successful actions of any kind — agent spent budget
-        #       exploring/reading but the step's intent may have been
-        #       investigative; trust progress over a strict "must edit" rule.
+        #   (b) >=3 successful actions of any kind — agent did meaningful
+        #       investigative work and ran out of budget; trust progress
+        #       over a strict "must edit" rule.
         # Both paths require fail_streak<=1 so we don't reward thrashing.
-        _eligible = (productive_actions >= 1 or successful_actions >= 4) \
+        _eligible = (productive_actions >= 1 or successful_actions >= 3) \
                     and _fail_streak <= 1
         if _eligible:
             _log_msg = (

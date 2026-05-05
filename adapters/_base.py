@@ -65,10 +65,33 @@ VALID_ACTIONS = frozenset([
 SYSTEM_PROMPT = """\
 You are an AI software agent operating via a structured JSON protocol.
 You MUST respond with ONLY a single JSON object. No markdown, no code blocks, no explanation outside the JSON.
-Choose exactly one action from the available_actions list in the request.
 
-Response format (respond with exactly this structure):
+Two response shapes are supported. Pick whichever matches what you need to do this turn.
+
+A) SINGLE-ACTION (one operation this turn):
 {"action": "action_name", "params": {...}, "reasoning": "brief reason"}
+
+B) MULTI-ACTION BATCH (preferred when several related operations belong together —
+   e.g. create three test files, or write a class + register it + add a test):
+{"actions": [
+   {"action": "write_file", "params": {"path": "src/foo.py", "content": "..."}},
+   {"action": "write_file", "params": {"path": "tests/test_foo.py", "content": "..."}},
+   {"action": "step_done",  "params": {"summary": "Created foo + its test"}}
+ ],
+ "reasoning": "Both files needed for this step; create together."}
+
+Batch rules:
+  - Actions execute in order. If one fails, the remaining are skipped and you
+    get the failure result back next turn.
+  - You can include step_done as the LAST entry to finish the step in the same
+    round-trip after your edits succeed.
+  - You can include need_help mid-batch to abort early with a reason.
+  - Do NOT mix exploration (read_file / list_files / search) into the same
+    batch as edits — read first, decide, then batch the edits in the next turn.
+  - 5 actions per batch is a sensible upper bound; bigger batches risk one
+    failure invalidating a lot of related work.
+
+Choose exactly one action (or one batch) from the available_actions list.
 
 Core actions:
 - "read_file": Read a file. Params: {"path": "relative/path.py"}
@@ -553,7 +576,28 @@ class BaseAdapter(ABC):
         return "\n".join(parts)
 
     def _parse_response(self, text: str) -> dict:
-        """Extract a JSON action dict from raw AI output."""
+        """Extract a JSON action dict from raw AI output.
+
+        Two shapes accepted:
+
+        Single-action (legacy)::
+
+            {"action": "edit_file", "params": {...}, "reasoning": "..."}
+
+        Multi-action batch (preferred for related ops in one round-trip)::
+
+            {"actions": [
+                {"action": "write_file", "params": {...}},
+                {"action": "edit_file",  "params": {...}},
+                {"action": "step_done",  "params": {"summary": "..."}}
+             ],
+             "reasoning": "..."}
+
+        Multi-action is normalised to a single dict with an ``actions`` list
+        plus a synthetic top-level ``action`` set to the FIRST entry — that
+        keeps every existing caller happy (they read ``response['action']``)
+        while ``response['actions']`` lets the loop fan out the batch.
+        """
         if not text or not text.strip():
             return _error_response("Empty response from AI provider.")
 
@@ -563,6 +607,34 @@ class BaseAdapter(ABC):
                 f"Could not parse JSON from response (first 500 chars): {text[:500]}"
             )
 
+        # Multi-action batch shape ────────────────────────────────────────
+        if "actions" in obj and isinstance(obj["actions"], list) and obj["actions"]:
+            cleaned: list[dict] = []
+            for i, sub in enumerate(obj["actions"]):
+                if not isinstance(sub, dict):
+                    return _error_response(
+                        f"actions[{i}] is not an object: {sub!r}"
+                    )
+                if "action" not in sub:
+                    return _error_response(
+                        f"actions[{i}] missing 'action' key: {json.dumps(sub)[:200]}"
+                    )
+                if sub["action"] not in VALID_ACTIONS:
+                    return _error_response(
+                        f"actions[{i}] unknown action {sub['action']!r}. "
+                        f"Valid: {', '.join(sorted(VALID_ACTIONS))}"
+                    )
+                sub.setdefault("params", {})
+                cleaned.append(sub)
+            obj["actions"] = cleaned
+            # Synthesise top-level action/params from the first entry so the
+            # legacy "response['action']" code path keeps working.
+            obj.setdefault("action", cleaned[0]["action"])
+            obj.setdefault("params", cleaned[0].get("params", {}))
+            obj.setdefault("reasoning", "")
+            return obj
+
+        # Single-action shape (legacy) ────────────────────────────────────
         if "action" not in obj:
             return _error_response(
                 f"Response JSON missing 'action' key: {json.dumps(obj)[:500]}"

@@ -530,111 +530,138 @@ class AgentProtocol:
             if self.log_dir:
                 self._write_log(i, 'response', response)
 
-            # Parse action from response
-            action = response.get('action', 'need_help')
-            params = response.get('params', {})
-
-            # Handle terminal actions
-            if action == 'step_done':
-                # Append assistant response before confirming
-                self.history.append({'role': 'assistant', 'content': json.dumps(response)})
-
-                if self.confirm_before_done:
-                    confirm_result = self._confirm_done(task, request, response, i)
-                    if confirm_result == 'retry':
-                        # Confirmation found issues — retry with agent's own confirmation
-                        time.sleep(delay)
-                        continue
-                    elif confirm_result == 'confirmed':
-                        # Confirmation passed — accept step_done
-                        pass
-                    # On error or other results, accept step_done anyway (fail-open)
-
-                return {
-                    'success': True,
-                    'summary': params.get('summary', 'Task completed'),
-                    'files_changed': params.get('files_changed', []),
-                    'iterations': i + 1,
-                    'duration': time.time() - start_time,
-                    'action_log': self.executor.get_log(),
-                }
-
-            if action == 'need_help':
-                self.history.append({'role': 'assistant', 'content': json.dumps(response)})
-                # S3-W07: log escalation to DB if db_handler present
-                if self.db_handler and hasattr(self.db_handler, 'pdb') and self.db_handler.pdb:
-                    try:
-                        from automatica_db import log_escalation
-                        log_escalation(
-                            self.db_handler.pdb,
-                            task.get('display_id', ''),
-                            self.session_id,
-                            i,
-                            params.get('reason', 'need_help'),
-                            json.dumps(request)[:5000],
-                        )
-                    except Exception:
-                        pass
-                return {
-                    'success': False,
-                    'reason': params.get('reason', 'Agent requested help'),
-                    'iterations': i + 1,
-                    'duration': time.time() - start_time,
-                    'action_log': self.executor.get_log(),
-                }
-
-            # Validate params
-            from validation import validate_action
-            _schema_result = validate_action(action, params)
-            # Fall back to legacy _validate_params when validate_action has no schema
-            if _schema_result and _schema_result.startswith("Unknown action"):
-                validation = self._validate_params(action, params)
+            # Normalise to a list. Single-action shape -> 1-element list;
+            # multi-action batch -> the response['actions'] list. Same loop
+            # body handles both.
+            batch = response.get('actions')
+            if isinstance(batch, list) and batch:
+                actions_iter = batch
             else:
-                validation = _schema_result
-            if validation:
-                self.history.append({'role': 'assistant', 'content': json.dumps(response)})
-                self.history.append({'role': 'system', 'content': f"PARAM ERROR: {validation}"})
-                time.sleep(delay)
-                continue
+                actions_iter = [{
+                    'action': response.get('action', 'need_help'),
+                    'params': response.get('params', {}) or {},
+                    'reasoning': response.get('reasoning', ''),
+                }]
 
-            # Execute action
-            try:
-                result = self.executor.execute(response)
-            except Exception as _exec_exc:
-                import traceback as _tb
-                _tb.print_exc()
-                result = {"success": False, "message": f"EXECUTOR ERROR: {_exec_exc}"}
-
-            # Track failures to detect stuck loops
-            if not result.get('success', False):
-                fail_key = f"{action}:{params.get('path', params.get('pattern', ''))}"
-                if fail_key == _last_fail_key:
-                    _fail_streak += 1
-                else:
-                    _fail_streak = 1
-                    _last_fail_key = fail_key
-
-                if _fail_streak >= 3:
-                    # Same action failed 3+ times — abort with explicit guidance
-                    self.history.append({'role': 'assistant', 'content': json.dumps(response)})
-                    self.history.append({'role': 'system', 'content': (
-                        f"STUCK LOOP DETECTED: {action} on {fail_key} failed {_fail_streak} times in a row. "
-                        f"You must either: (1) try a different approach, (2) call need_help, or "
-                        f"(3) if the task is actually done, call step_done."
-                    )})
-                    time.sleep(delay)
-                    continue
-
-            # Append response + result to history
+            # Append the response (whatever shape) to history once.
             self.history.append({'role': 'assistant', 'content': json.dumps(response)})
-            self.history.append({'role': 'system', 'content': result.get('message', '')})
 
-            # Track successful writes to the completed manifest
-            if result.get('success') and action in ('write_file', 'edit_file', 'run_command', 'commit'):
-                summary = f"{action}({params.get('path', params.get('command', ''))})"
-                completed_steps.append(summary)
+            from validation import validate_action
+            terminal: Optional[dict] = None
+            stop_batch = False
 
+            for sub_idx, sub in enumerate(actions_iter):
+                action = sub.get('action', 'need_help')
+                params = sub.get('params', {}) or {}
+                _is_batch = len(actions_iter) > 1
+                _prefix = f"batch[{sub_idx}] " if _is_batch else ""
+
+                if action == 'step_done':
+                    # In legacy mode we still honour confirm_before_done.
+                    if self.confirm_before_done:
+                        confirm_result = self._confirm_done(task, request, sub, i)
+                        if confirm_result == 'retry':
+                            stop_batch = True
+                            break
+                    terminal = {
+                        'success': True,
+                        'summary': params.get('summary', 'Task completed'),
+                        'files_changed': params.get('files_changed', []),
+                        'iterations': i + 1,
+                        'duration': time.time() - start_time,
+                        'action_log': self.executor.get_log(),
+                    }
+                    break
+
+                if action == 'need_help':
+                    if (self.db_handler and hasattr(self.db_handler, 'pdb')
+                            and self.db_handler.pdb):
+                        try:
+                            from automatica_db import log_escalation
+                            log_escalation(
+                                self.db_handler.pdb,
+                                task.get('display_id', ''),
+                                self.session_id,
+                                i,
+                                params.get('reason', 'need_help'),
+                                json.dumps(request)[:5000],
+                            )
+                        except Exception:
+                            pass
+                    terminal = {
+                        'success': False,
+                        'reason': params.get('reason', 'Agent requested help'),
+                        'iterations': i + 1,
+                        'duration': time.time() - start_time,
+                        'action_log': self.executor.get_log(),
+                    }
+                    break
+
+                _schema_result = validate_action(action, params)
+                if _schema_result and _schema_result.startswith("Unknown action"):
+                    validation = self._validate_params(action, params)
+                else:
+                    validation = _schema_result
+                if validation:
+                    self.history.append({
+                        'role': 'system',
+                        'content': f"{_prefix}PARAM ERROR ({action}): {validation}"
+                    })
+                    stop_batch = True
+                    break
+
+                try:
+                    result = self.executor.execute({
+                        'action': action,
+                        'params': params,
+                        'reasoning': sub.get('reasoning', ''),
+                    })
+                except Exception as _exec_exc:
+                    import traceback as _tb
+                    _tb.print_exc()
+                    result = {"success": False,
+                              "message": f"EXECUTOR ERROR: {_exec_exc}"}
+
+                if not result.get('success', False):
+                    fail_key = f"{action}:{params.get('path', params.get('pattern', ''))}"
+                    if fail_key == _last_fail_key:
+                        _fail_streak += 1
+                    else:
+                        _fail_streak = 1
+                        _last_fail_key = fail_key
+
+                    if _fail_streak >= 3:
+                        self.history.append({'role': 'system', 'content': (
+                            f"STUCK LOOP DETECTED: {action} on {fail_key} failed "
+                            f"{_fail_streak} times in a row. You must either: "
+                            f"(1) try a different approach, (2) call need_help, "
+                            f"or (3) if the task is actually done, call step_done."
+                        )})
+                        stop_batch = True
+                        break
+                    self.history.append({
+                        'role': 'system',
+                        'content': (
+                            f"{_prefix}{result.get('message','')}\n"
+                            + (f"(batch aborted; remaining {len(actions_iter)-sub_idx-1} "
+                               f"action(s) skipped — fix and retry next turn)"
+                               if _is_batch else "")
+                        )
+                    })
+                    stop_batch = True
+                    break
+
+                self.history.append({'role': 'system',
+                                       'content': _prefix + result.get('message', '')})
+                if action in ('write_file', 'edit_file', 'run_command', 'commit'):
+                    summary = f"{action}({params.get('path', params.get('command', ''))})"
+                    completed_steps.append(summary)
+
+            if terminal is not None:
+                return terminal
             time.sleep(delay)
+            if stop_batch:
+                continue
 
         # Max iterations reached
         return {
@@ -854,74 +881,114 @@ class AgentProtocol:
             except Exception as exc:
                 return {'success': False, 'reason': f'Adapter error: {exc}', 'iterations': i + 1}
 
-            action = response.get('action', 'need_help')
-            params = response.get('params', {})
             if self.log_dir:
                 self._write_log(i, f'step{step_num}_response', response)
 
-            if action == 'step_done':
-                self.history.append({'role': 'assistant', 'content': json.dumps(response)})
-                return {
-                    'success': True,
-                    'summary': params.get('summary', f'step {step_num} done'),
-                    'files_changed': params.get('files_changed', []),
-                    'iterations': i + 1,
-                    'duration': time.time() - start,
-                }
-            if action == 'need_help':
-                self.history.append({'role': 'assistant', 'content': json.dumps(response)})
-                return {
-                    'success': False,
-                    'reason': params.get('reason', 'need_help'),
-                    'iterations': i + 1,
-                    'duration': time.time() - start,
-                }
+            # Batch shape: response['actions'] is a list. Otherwise single
+            # action via response['action']/['params']. Normalise to a list
+            # so the inner loop only deals with one shape.
+            batch = response.get('actions')
+            if isinstance(batch, list) and batch:
+                actions_iter = batch
+            else:
+                actions_iter = [{
+                    'action': response.get('action', 'need_help'),
+                    'params': response.get('params', {}) or {},
+                    'reasoning': response.get('reasoning', ''),
+                }]
 
-            # Validate and execute
+            # Execute each action in the batch in order. step_done / need_help
+            # are terminal — emit them and bail. Any failed action also bails
+            # so the model gets the error context next turn rather than its
+            # later batch entries silently being skipped.
+            self.history.append({'role': 'assistant', 'content': json.dumps(response)})
+
             from validation import validate_action
-            _schema_result = validate_action(action, params)
-            # Only fall back to legacy _validate_params when validate_action has no schema
-            # for this action (signalled by an "Unknown action" prefix). For known actions,
-            # trust validate_action's result — it explicitly allows empty 'content' for
-            # write_file, which _validate_params incorrectly rejects.
-            if _schema_result and _schema_result.startswith("Unknown action"):
-                validation = self._validate_params(action, params)
-            else:
-                validation = _schema_result
-            if validation:
-                self.history.append({'role': 'assistant', 'content': json.dumps(response)})
-                self.history.append({'role': 'system', 'content': f"PARAM ERROR: {validation}"})
-                time.sleep(0.3)
-                continue
+            terminal_result: Optional[dict] = None
+            batch_failed = False
+            for sub_idx, sub in enumerate(actions_iter):
+                action = sub.get('action', 'need_help')
+                params = sub.get('params', {}) or {}
 
-            try:
-                result = self.executor.execute(response)
-            except Exception as _exec_exc:
-                import traceback as _tb
-                _tb.print_exc()
-                result = {"success": False, "message": f"EXECUTOR ERROR: {_exec_exc}"}
+                if action == 'step_done':
+                    terminal_result = {
+                        'success': True,
+                        'summary': params.get('summary', f'step {step_num} done'),
+                        'files_changed': params.get('files_changed', []),
+                        'iterations': i + 1,
+                        'duration': time.time() - start,
+                    }
+                    break
+                if action == 'need_help':
+                    terminal_result = {
+                        'success': False,
+                        'reason': params.get('reason', 'need_help'),
+                        'iterations': i + 1,
+                        'duration': time.time() - start,
+                    }
+                    break
 
-            # Track failures and successes. _fail_streak measures CONSECUTIVE
-            # failures only — a success in between resets the streak so the
-            # implicit-step-done fallback below can still fire when the agent
-            # recovers from an early stumble.
-            if not result.get('success', False):
-                fail_key = f"{action}:{params.get('path', params.get('pattern', ''))}"
-                if fail_key == _last_fail_key:
-                    _fail_streak += 1
+                _schema_result = validate_action(action, params)
+                if _schema_result and _schema_result.startswith("Unknown action"):
+                    validation = self._validate_params(action, params)
                 else:
-                    _fail_streak = 1
-                    _last_fail_key = fail_key
-            else:
+                    validation = _schema_result
+                if validation:
+                    self.history.append({
+                        'role': 'system',
+                        'content': (f"PARAM ERROR (batch[{sub_idx}] {action}): "
+                                    f"{validation}")
+                    })
+                    batch_failed = True
+                    break
+
+                # Execute the single action via the standard executor path.
+                try:
+                    result = self.executor.execute({
+                        'action': action,
+                        'params': params,
+                        'reasoning': sub.get('reasoning', ''),
+                    })
+                except Exception as _exec_exc:
+                    import traceback as _tb
+                    _tb.print_exc()
+                    result = {"success": False,
+                              "message": f"EXECUTOR ERROR: {_exec_exc}"}
+
+                # Track success / failure streaks across the WHOLE step,
+                # not just this iteration — the implicit-step-done fallback
+                # downstream looks at these.
+                if not result.get('success', False):
+                    fail_key = f"{action}:{params.get('path', params.get('pattern', ''))}"
+                    if fail_key == _last_fail_key:
+                        _fail_streak += 1
+                    else:
+                        _fail_streak = 1
+                        _last_fail_key = fail_key
+                    self.history.append({
+                        'role': 'system',
+                        'content': (f"batch[{sub_idx}] {result.get('message','')}\n"
+                                    f"(batch aborted; remaining {len(actions_iter)-sub_idx-1} "
+                                    f"action(s) skipped — fix and retry next turn)")
+                    })
+                    batch_failed = True
+                    break
                 successful_actions += 1
                 if action in _PRODUCTIVE:
                     productive_actions += 1
                 _fail_streak = 0
                 _last_fail_key = ""
+                self.history.append({
+                    'role': 'system',
+                    'content': (f"batch[{sub_idx}] " if len(actions_iter) > 1 else "")
+                              + result.get('message', '')
+                })
 
-            self.history.append({'role': 'assistant', 'content': json.dumps(response)})
-            self.history.append({'role': 'system', 'content': result.get('message', '')})
+            if terminal_result is not None:
+                return terminal_result
             time.sleep(0.3)
+            if batch_failed:
+                continue  # next outer iteration; model sees the error
 
         # Implicit success: budget exhausted but the agent did real work.
         # Two acceptance paths so different step shapes are covered:

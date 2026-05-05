@@ -256,6 +256,48 @@ def _init_project_if_needed(project_dir: Path, goal: str, provider: str, model: 
     conn.close()
 
 
+def _replenish_via_review(project_dir: Path, provider: str, log_fn=print) -> int:
+    """Mid-run backlog replenishment. Constructs a SprintRunner just long
+    enough to call replenish_backlog_from_review, then closes it. Decoupled
+    from the sprint subprocess so we don't spin up sprint_runner.py just to
+    add tasks. Returns the number of tasks added."""
+    try:
+        import sys as _sys
+        _pkg_dir = Path(__file__).resolve().parent
+        if str(_pkg_dir) not in _sys.path:
+            _sys.path.insert(0, str(_pkg_dir))
+        import sqlite3 as _sq3
+        from sprint_runner import SprintRunner
+        # Resolve provider config from the global DB (same path as the
+        # sprint subprocess uses).
+        _global_db_path = Path.home() / ".automatica" / "automatica.db"
+        gdb = _sq3.connect(str(_global_db_path))
+        gdb.row_factory = _sq3.Row
+        try:
+            from agent_protocol import get_provider_config
+            provider_config = get_provider_config(gdb, provider) or {}
+        finally:
+            gdb.close()
+        # Plug provider_type from DB row into config (SprintRunner expects it).
+        runner = SprintRunner(
+            project_dir=project_dir,
+            provider=provider,
+            provider_config=provider_config,
+            max_parallel=1,
+            log_dir=_pkg_dir / "logs" / "sprints",
+        )
+        pconn = _sq3.connect(str(project_dir / ".automatica" / "project.db"))
+        pconn.row_factory = _sq3.Row
+        try:
+            added = runner.replenish_backlog_from_review(pconn)
+        finally:
+            pconn.close()
+        return int(added or 0)
+    except Exception as exc:
+        log_fn(f"  [REPLENISH] Failed: {exc}")
+        return 0
+
+
 def _bump_stalled_tasks(project_dir: Path, log_fn=print) -> None:
     """Increment complexity by one Fibonacci step for all blocked/failed tasks.
 
@@ -438,6 +480,10 @@ def main():
     parser.add_argument("--max-sprints", type=int, default=10)
     parser.add_argument("--max-points", type=int, default=40)
     parser.add_argument("--max-iterations", type=int, default=12)
+    parser.add_argument("--no-replenish", dest="no_replenish", action="store_true",
+                        help="Disable mid-run review-driven backlog replenishment "
+                             "(default: refill backlog when empty so the loop "
+                             "runs through the whole --max-minutes budget)")
     parser.add_argument("--observations-file", default=None)
     # Server mode — start REST+WebSocket API server for app/phone connections
     parser.add_argument("--Serve", dest="serve", action="store_true",
@@ -632,6 +678,21 @@ def main():
             # Sprint 1 with a project_goal: run anyway so the sprint runner can generate tasks
             if sprint_num == 1 and counts.get("has_goal"):
                 write_obs(f"  Backlog empty — sprint runner will auto-generate tasks from project goal")
+            elif counts.get("has_goal") and not getattr(args, "no_replenish", False):
+                # Continuous-loop replenishment: instead of exiting on empty
+                # mid-run, ask the LLM to review the project and propose a
+                # fresh batch of follow-on tasks (tests, refactors, perf,
+                # polish). Lets `--max-minutes 720` actually mean 12 hours of
+                # progress instead of "12 hours OR until the first 6 tasks
+                # finish, whichever comes first".
+                added = _replenish_via_review(project_dir, args.provider, write_obs)
+                if added > 0:
+                    write_obs(f"  Backlog replenished with {added} review-driven tasks; continuing")
+                    counts = load_backlog_counts(project_dir)
+                else:
+                    write_obs(f"\n### DONE — backlog empty and review produced no new tasks "
+                              f"after {sprint_num - 1} sprints")
+                    break
             else:
                 write_obs(f"\n### DONE — backlog empty after {sprint_num - 1} sprints")
                 break

@@ -2268,6 +2268,191 @@ class SprintRunner:
         conn.commit()
         _log(f"[BACKLOG] Auto-generated {added} subtasks for {len(tasks)} tasks")
 
+    def replenish_backlog_from_review(self, conn) -> int:
+        """When the backlog has emptied, review the current project and propose
+        a fresh batch of follow-on tasks: missing unit tests, refactor / SOLID
+        opportunities, performance hotspots, and polish items. Inserts the
+        proposed tasks into the project DB and returns the insert count.
+
+        Used by run_autonomous to keep the loop alive — without this an
+        Ollama-only loop terminates the moment its first auto-generated batch
+        finishes, which isn't 'continuous through the day'.
+        """
+        from automatica_db import get_project_setting_json, get_project_setting
+
+        # Pull the goal so the LLM has the same orientation as a first-pass
+        # generation, plus a project file census so it can ground its
+        # suggestions in what actually exists.
+        goal = (get_project_setting(conn, "project_goal", "") or "").strip()
+        if not goal:
+            pipeline_cfg = get_project_setting_json(conn, "pipeline_config") or {}
+            goal = (pipeline_cfg.get("project_goal") or "").strip()
+        if not goal:
+            goal = (get_project_setting(conn, "global_goal", "") or "").strip()
+
+        # File census — list project files (already filters out venv/build/etc
+        # via project_scanner.SKIP_DIRS). Group by extension so the LLM sees
+        # the codebase shape without us flooding tokens with every path.
+        try:
+            from project_scanner import list_project_files
+            files = list_project_files(self.project_dir) or []
+        except Exception:
+            files = []
+        # Skip empty / lockfile / generated entries
+        files = [f for f in files if f.get("size_bytes", 0) > 0
+                 and not f.get("path", "").endswith(".lock")]
+        sample_paths = [f["path"] for f in files][:30]
+
+        # Pull a small sample of source-file content so the review is grounded
+        # in real code, not just paths. Cap at 8 files / 800 chars each so the
+        # prompt stays well below local-model context limits.
+        snippets: list[str] = []
+        for f in files[:8]:
+            p = self.project_dir / f["path"]
+            try:
+                txt = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            snippets.append(f"### {f['path']}\n{txt[:800]}")
+
+        # Pull recent done tasks so the LLM doesn't propose work already done.
+        recent_done = [dict(r) for r in conn.execute(
+            "SELECT display_id, title FROM tasks WHERE status='done' "
+            "ORDER BY completed_at DESC NULLS LAST LIMIT 12"
+        ).fetchall()]
+        done_summary = "\n".join(
+            f"- {t['display_id']}: {t['title']}" for t in recent_done
+        ) or "(none)"
+
+        prompt = (
+            "You are a senior software engineer reviewing an autonomous "
+            "project after its initial backlog has been completed.\n\n"
+            f"Project goal: {goal or '(no goal set)'}\n\n"
+            f"Recently completed tasks:\n{done_summary}\n\n"
+            f"Project file census ({len(files)} files; first 30):\n  "
+            + "\n  ".join(sample_paths) + "\n\n"
+            f"Code samples:\n\n" + "\n\n".join(snippets) + "\n\n"
+            "Propose 5-8 NEW tasks across these categories (mix them — don't "
+            "stack the list with one type):\n"
+            "  • Unit tests for under-tested modules\n"
+            "  • Refactors that apply SOLID principles "
+            "(single-responsibility splits, dependency inversion, etc.)\n"
+            "  • Extract common helpers / dedupe logic\n"
+            "  • Performance: tighten hot loops, avoid per-frame allocations\n"
+            "  • Polish: error handling, docstrings, small UX wins\n"
+            "  • Screenshot/visual review if the app has a UI worth checking\n\n"
+            "Constraints:\n"
+            "  - DO NOT repeat the recently-completed tasks above.\n"
+            "  - Each task must reference a real file/path from the census.\n"
+            "  - Keep titles concrete (\"Refactor Paddle.update to extract "
+            "AI-tracking helper\" not \"Improve paddle\").\n"
+            "  - Each description: 1-3 numbered action steps in plain English. "
+            "NO code in descriptions.\n\n"
+            "Respond ONLY with a JSON array. No markdown. No prose.\n"
+            'Example: [{"title":"Add unit tests for src/ball.py update()",'
+            '"description":"1. Create tests/test_ball.py\\n2. Cover '
+            'horizontal/vertical bounce paths","priority":"HIGH",'
+            '"complexity":2}]\n'
+            "Rules: priority=HIGH/MEDIUM/LOW. complexity in {2,3,5,8}."
+        )
+
+        try:
+            import urllib.request as _urlreq
+            _endpoint = (self.provider_config or {}).get("endpoint", "http://localhost:11434")
+            _model = (self.provider_config or {}).get("model", "llama3.2:3b")
+            _body = json.dumps({
+                "model": _model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"num_predict": 2048, "temperature": 0.3},
+            }).encode()
+            _req = _urlreq.Request(
+                f"{_endpoint}/api/generate",
+                data=_body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with _urlreq.urlopen(_req, timeout=180) as _resp:
+                _data = json.loads(_resp.read().decode())
+                raw = _data.get("response", "")
+        except Exception as exc:
+            _log(f"[REPLENISH] Ollama HTTP call failed: {exc}")
+            return 0
+
+        # Parse the JSON array from the response (same strategy as
+        # _generate_tasks_from_goal).
+        import re as _re
+        tasks_data: list = []
+        for m in _re.finditer(r'\[[\s\S]+\]', raw):
+            try:
+                parsed = json.loads(m.group())
+                if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+                    tasks_data = parsed
+                    break
+            except Exception:
+                pass
+        if not tasks_data:
+            try:
+                parsed = json.loads(raw.strip())
+                if isinstance(parsed, list):
+                    tasks_data = parsed
+            except Exception:
+                pass
+
+        if not tasks_data:
+            _log("[REPLENISH] Failed to parse review task list from AI response")
+            _log(f"[REPLENISH] Raw response (first 300 chars): {raw[:300]}")
+            return 0
+
+        # Pick the next available TASK-### display_id by scanning existing.
+        existing_ids = {
+            row[0] for row in conn.execute(
+                "SELECT display_id FROM tasks WHERE display_id LIKE 'TASK-%'"
+            ).fetchall()
+        }
+        next_idx = 1
+        def _next_display_id() -> str:
+            nonlocal next_idx
+            while True:
+                did = f"TASK-{next_idx:03d}"
+                next_idx += 1
+                if did not in existing_ids:
+                    existing_ids.add(did)
+                    return did
+
+        _VALID_COMPLEXITY = (1, 2, 3, 5, 8, 13, 21, 34, 55, 89)
+        inserted = 0
+        for task in tasks_data[:10]:
+            if not isinstance(task, dict) or not task.get("title"):
+                continue
+            try:
+                raw_complexity = int(task.get("complexity", 3))
+            except (TypeError, ValueError):
+                raw_complexity = 3
+            complexity = min(_VALID_COMPLEXITY, key=lambda v: abs(v - raw_complexity))
+            display_id = _next_display_id()
+            try:
+                conn.execute(
+                    "INSERT INTO tasks (display_id, title, priority, complexity, "
+                    "description, status) VALUES (?,?,?,?,?,?)",
+                    (
+                        display_id,
+                        str(task.get("title", "Untitled"))[:200],
+                        str(task.get("priority", "MEDIUM")).upper(),
+                        complexity,
+                        str(task.get("description", "")),
+                        "backlog",
+                    ),
+                )
+                inserted += 1
+                _log(f"[REPLENISH] Added: {display_id} — {str(task.get('title',''))[:60]}")
+            except Exception as exc:
+                _log(f"[REPLENISH] Failed to insert task: {exc}")
+
+        conn.commit()
+        _log(f"[REPLENISH] Backlog refilled with {inserted} review-driven task(s)")
+        return inserted
+
     def _execute_review_phase(self, step: dict):
         """Run a review/retrospective phase via AgentProtocol or built-in review."""
         ctx = self._run_ctx

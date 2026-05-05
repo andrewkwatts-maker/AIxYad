@@ -115,6 +115,24 @@ AVAILABLE_ACTIONS = [
     # S3-W02: additional discovery actions
     {"name": "get_json_keys", "description": "List top-level keys of a JSON config file with types and previews",
      "params": {"file_path": "string"}},
+    # Vision / runtime-state review actions. These already exist in
+    # vision_actions.py and route through agent_executor — but until they
+    # appeared here the agent didn't know they were callable. Use them when
+    # a task description involves "review the running app" or "screenshot
+    # the UI and check for X". Default permission can_screenshot=True allows
+    # them; set provider permissions to disable.
+    {"name": "launch_app", "description": "Spawn an app (e.g. python pong.py) so it can be screenshotted later",
+     "params": {"command": "string", "wait_seconds": "int (optional, default 2)"}},
+    {"name": "list_windows", "description": "List visible OS windows (title + handle) — use this to find the app you launched",
+     "params": {}},
+    {"name": "screenshot", "description": "Capture the whole screen to a PNG and return its path",
+     "params": {"path": "string (optional output filename, defaults under .automatica/screenshots/)"}},
+    {"name": "screenshot_window", "description": "Capture a specific window by title (substring match) to a PNG",
+     "params": {"window_title": "string"}},
+    {"name": "analyze_screenshot", "description": (
+        "Send a screenshot through a local vision model and return a text "
+        "description. Useful for 'does the game look right?' style review."),
+     "params": {"image_path": "string", "prompt": "string (what to look for)", "model": "string (optional, default moondream)"}},
     {"name": "step_done", "description": "Signal task complete",
      "params": {"summary": "string", "files_changed": "string[] (optional)"}},
     {"name": "need_help", "description": "Escalate — stuck or need human review",

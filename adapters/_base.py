@@ -323,6 +323,35 @@ class BaseAdapter(ABC):
         """Convert a protocol request dict into a plain-text prompt."""
         parts: List[str] = []
 
+        # ── Existing project files ────────────────────────────────────────
+        # Surfaced FIRST so the agent reckons with reality before reading the
+        # task. Without this, agent_protocol set request["wiki_summary"] but
+        # the prompt builder ignored it — every task prompted the model with
+        # zero awareness of the codebase, and small models hallucinated
+        # paths / created duplicates (game.py + src/game.py + game/game.py +
+        # score_manager.py + game/scoring_system.py … all "new", none of
+        # them edits of what existed).
+        wiki = request.get("wiki_summary") or []
+        if wiki:
+            parts.append("== EXISTING PROJECT FILES ==")
+            parts.append(
+                "These files already exist. PREFER EDITING THEM over creating "
+                "new files at new paths. Do NOT invent paths — every path you "
+                "write/edit must either appear in this list or be an obvious "
+                "new file the task description names explicitly."
+            )
+            for f in sorted(wiki, key=lambda x: x.get("path", "")):
+                meta = []
+                if f.get("language"):
+                    meta.append(str(f["language"]))
+                if f.get("line_count") is not None:
+                    meta.append(f"{f['line_count']}L")
+                if f.get("size_bytes") is not None:
+                    meta.append(f"{f['size_bytes']}B")
+                meta_str = "  [" + ", ".join(meta) + "]" if meta else ""
+                parts.append(f"  {f.get('path', '?')}{meta_str}")
+            parts.append("")
+
         task = request.get("task", {})
         if task:
             parts.append("== TASK ==")

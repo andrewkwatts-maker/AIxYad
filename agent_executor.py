@@ -73,6 +73,15 @@ def _os_file_lock(target_path: Path, timeout: float = 30.0):
             except Exception:
                 pass
         f.close()
+        # Remove the empty sidecar so it doesn't pollute the working tree.
+        # The .lock file is purely a portalocker handle target — once unlocked
+        # and the file handle is closed, we no longer need it on disk. Without
+        # this every write_file/edit_file leaves a ".lock" file behind which
+        # then shows up in git status, gets committed by accident, etc.
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass  # best-effort; ok if another holder is racing
 
 
 try:
@@ -926,13 +935,86 @@ class AgentExecutor:
     # ── Command Execution ───────────────────────────────────────────────
 
     def _do_run_command(self, params: dict) -> dict:
-        """Run a shell command with safety checks."""
+        """Run a shell command with safety checks.
+
+        If the agent supplies a chained command (`A && B`, `A ; B`), we split
+        on the chain operators and run each segment as its own subprocess.
+        Each segment is independently safety-checked, so chained injection
+        ("python; rm -rf /") still fails. shell=False is preserved everywhere.
+        Reject other shell metas (pipe, backtick, $()) outright — those imply
+        actual shell semantics we don't support without shell=True.
+        """
         command = params.get("command", "")
         timeout = min(params.get("timeout", 120), 600)
 
         if not command:
             return {"success": False, "message": "ACTION: run_command — ERROR: command is empty"}
 
+        # Reject shell metas that imply actual shell semantics. Chain operators
+        # (&&, ;) are handled below by splitting the command into segments.
+        for bad in ("||", "|", "$(", "`"):
+            if bad in command:
+                return {
+                    "success": False,
+                    "message": (
+                        f"ACTION: run_command '{command}' — DENIED "
+                        f"(shell operator '{bad}' is not supported; commands "
+                        f"run with shell=False. Use && or ; to chain — those "
+                        f"are split into separate subprocess calls — but "
+                        f"pipes, redirects, command-substitution, and "
+                        f"backticks are not available)"
+                    ),
+                }
+
+        # Split on && / ; chain operators. Each segment is run as its own
+        # subprocess (shell=False) so this stays safe.
+        import re as _re
+        segments = [s.strip() for s in _re.split(r"&&|;", command) if s.strip()]
+        if not segments:
+            return {"success": False, "message": "ACTION: run_command — ERROR: command is empty"}
+
+        if len(segments) > 1:
+            outputs = []
+            last_rc = 0
+            for seg in segments:
+                # venv activator scripts (`.\venv\Scripts\activate`,
+                # `source venv/bin/activate`) are no-ops under shell=False —
+                # they only mutate the parent shell's environment, which we
+                # don't have. Skip them with a note so the chain continues.
+                if _re.search(
+                    r"(?:^|[\\/])(activate(?:\.bat|\.fish|\.ps1)?|Activate\.ps1)\s*$",
+                    seg, _re.IGNORECASE,
+                ) or seg.lower().startswith("source "):
+                    outputs.append(
+                        f"--- segment: {seg} ---\n"
+                        f"SKIPPED (activate is a no-op under shell=False; "
+                        f"use `<venv>/Scripts/python.exe -m pip ...` directly)"
+                    )
+                    continue
+                if not self._check_command(seg):
+                    return {
+                        "success": False,
+                        "message": (
+                            f"ACTION: run_command '{command}' — DENIED "
+                            f"(segment '{seg}' is blocked or not in safe list)"
+                        ),
+                    }
+                seg_result = self._do_run_command({"command": seg, "timeout": timeout})
+                outputs.append(f"--- segment: {seg} ---\n{seg_result.get('message', '')}")
+                if not seg_result.get("success", False):
+                    last_rc = 1
+                    break
+            return {
+                "success": last_rc == 0,
+                "message": (
+                    f"ACTION: run_command '{command}' — "
+                    f"{'SUCCESS' if last_rc == 0 else 'FAIL'} "
+                    f"(ran {len(outputs)}/{len(segments)} segment(s))\n\n"
+                    + "\n\n".join(outputs)
+                ),
+            }
+
+        # Single-segment path
         if not self._check_command(command):
             return {
                 "success": False,
@@ -940,7 +1022,7 @@ class AgentExecutor:
             }
 
         try:
-            # shell=False: prevents shell metacharacter injection (;, &&, |, $(...), etc.)
+            # shell=False: prevents shell metacharacter injection
             cmd_tokens = shlex.split(command, posix=(os.name != 'nt'))
             proc = subprocess.run(
                 cmd_tokens,

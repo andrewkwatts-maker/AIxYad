@@ -338,6 +338,16 @@ class BaseAdapter(ABC):
                         parts.append(f"  - {c}")
                 else:
                     parts.append(f"  {criteria}")
+            # Loop-control nudges set by AgentProtocol when the model is
+            # close to its iteration budget or has already done useful work.
+            # Without surfacing these in the prompt the model never sees the
+            # "call step_done" hint and burns the whole step looping edit_file.
+            if task.get("_completed"):
+                parts.append(f"Completed: {task['_completed']}")
+            if task.get("_budget_warning"):
+                parts.append(f"!! BUDGET: {task['_budget_warning']}")
+            elif task.get("_budget_note"):
+                parts.append(f"Budget note: {task['_budget_note']}")
 
         task_ctx = request.get('task_context')
         if task_ctx:

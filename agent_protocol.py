@@ -746,18 +746,46 @@ class AgentProtocol:
 
     def _run_single_step(self, step_task: dict, context: dict,
                           instructions: dict, step_num: int,
-                          max_step_iters: int = 3) -> dict:
-        """Run a single micro-step with up to max_step_iters attempts."""
+                          max_step_iters: Optional[int] = None) -> dict:
+        """Run a single micro-step with up to max_step_iters attempts.
+
+        Default is 8: smaller local models routinely use 3 iterations just
+        exploring (list_files -> read_file -> read_another) before they're
+        ready to edit; once they start editing they often loop edit_file on
+        the same file 4–5 times instead of calling step_done. The combined
+        budget plus the post-success nudge below keeps them from hitting the
+        cap without progress. Override per-provider via
+        provider_config['max_step_iters']."""
+        if max_step_iters is None:
+            cfg = getattr(self.adapter, 'config', {}) or {}
+            max_step_iters = int(cfg.get('max_step_iters', 8))
+        successful_actions = 0  # actions in this step whose executor result was success
+        productive_actions = 0  # write/edit/run_command — concrete state-changing work
         start = time.time()
         _last_fail_key = ""
         _fail_streak = 0
+        _PRODUCTIVE = {"write_file", "edit_file", "run_command", "run_script",
+                       "edit_section", "create_section", "replace_section",
+                       "insert_line", "remove_section", "rename_symbol"}
 
         for i in range(max_step_iters):
             remaining = max_step_iters - i
             t = dict(step_task)
+            # Escalating nudges to call step_done. Local models routinely loop
+            # edit_file 4-5x on the same file rather than declaring the step
+            # done — this hand-holds them out of the loop. Triggers once 2+
+            # tool calls have already succeeded for this step.
             if remaining == 1:
                 t['_budget_warning'] = (
-                    "LAST ATTEMPT. If the step is done, call step_done NOW. Otherwise need_help."
+                    "LAST ATTEMPT. If the step is done, call step_done NOW. "
+                    "Otherwise need_help."
+                )
+            elif successful_actions >= 2:
+                t['_budget_warning'] = (
+                    f"You have already completed {successful_actions} successful "
+                    f"action(s) this step. If the step's goal is achieved, call "
+                    f"step_done IMMEDIATELY — do not run more reads or edits. "
+                    f"Only continue if a concrete part of the step is still missing."
                 )
 
             request = self.build_request(t, context, instructions, i)
@@ -820,7 +848,10 @@ class AgentProtocol:
                 _tb.print_exc()
                 result = {"success": False, "message": f"EXECUTOR ERROR: {_exec_exc}"}
 
-            # Track failures
+            # Track failures and successes. _fail_streak measures CONSECUTIVE
+            # failures only — a success in between resets the streak so the
+            # implicit-step-done fallback below can still fire when the agent
+            # recovers from an early stumble.
             if not result.get('success', False):
                 fail_key = f"{action}:{params.get('path', params.get('pattern', ''))}"
                 if fail_key == _last_fail_key:
@@ -828,14 +859,50 @@ class AgentProtocol:
                 else:
                     _fail_streak = 1
                     _last_fail_key = fail_key
+            else:
+                successful_actions += 1
+                if action in _PRODUCTIVE:
+                    productive_actions += 1
+                _fail_streak = 0
+                _last_fail_key = ""
 
             self.history.append({'role': 'assistant', 'content': json.dumps(response)})
             self.history.append({'role': 'system', 'content': result.get('message', '')})
             time.sleep(0.3)
 
+        # Implicit success: budget exhausted but the agent did real work.
+        # Two acceptance paths so different step shapes are covered:
+        #   (a) >=1 productive action (write/edit/run_command) — concrete
+        #       state-change happened.
+        #   (b) >=4 successful actions of any kind — agent spent budget
+        #       exploring/reading but the step's intent may have been
+        #       investigative; trust progress over a strict "must edit" rule.
+        # Both paths require fail_streak<=1 so we don't reward thrashing.
+        _eligible = (productive_actions >= 1 or successful_actions >= 4) \
+                    and _fail_streak <= 1
+        if _eligible:
+            _log_msg = (
+                f'[implicit-step-done] step {step_num} budget exhausted '
+                f'after {productive_actions} productive / {successful_actions} '
+                f'total successful actions; treating as complete'
+            )
+            print(_log_msg, flush=True)
+            return {
+                'success': True,
+                'summary': _log_msg,
+                'files_changed': [],
+                'iterations': max_step_iters,
+                'duration': time.time() - start,
+            }
+
         return {
             'success': False,
-            'reason': f'Max {max_step_iters} attempts for step {step_num}',
+            'reason': (
+                f'Max {max_step_iters} attempts for step {step_num} '
+                f'(productive_actions={productive_actions}, '
+                f'successful_actions={successful_actions}, '
+                f'fail_streak={_fail_streak})'
+            ),
             'iterations': max_step_iters,
             'duration': time.time() - start,
         }

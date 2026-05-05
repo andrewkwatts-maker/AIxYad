@@ -655,6 +655,7 @@ def main():
             proc = subprocess.run(
                 cmd,
                 capture_output=True, text=True,
+                encoding='utf-8', errors='replace',
                 timeout=min(remaining_s - 10, args.max_minutes * 60),
                 cwd=str(_pkg_dir),
             )

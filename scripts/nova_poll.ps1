@@ -5,26 +5,29 @@
     run_autonomous.py already recovers stuck tasks on each invocation.
 
 .PARAMETER Project
-    Project directory. Default: H:\Github\Nova3D
+    Project directory. Default: H:\Github\Pong
 
 .PARAMETER Provider
-    AI provider name. Default: Claude
+    AI provider name. Default: Phi4 (local Ollama). Override with any provider
+    name configured in ~/.automatica/automatica.db. Other reasonable
+    Ollama-driven choices: Mistral, Llama3.1, DeepseekCoder.
 
 .PARAMETER IntervalHours
-    Hours between cycles. Default: 2
+    Hours between cycles. Default: 1
 
 .PARAMETER MaxMinutesPerCycle
     Max sprint runtime per cycle in minutes. Default: 110
 
 .EXAMPLE
     .\nova_poll.ps1
-    .\nova_poll.ps1 -IntervalHours 2 -Provider Claude
+    .\nova_poll.ps1 -IntervalHours 2 -Provider Phi4
+    .\nova_poll.ps1 -Project H:\Github\Nova3D -Provider Claude-Sonnet
 #>
 [CmdletBinding()]
 param(
-    [string]$Project            = "H:\Github\Nova3D",
-    [string]$Provider           = "Claude",
-    [double]$IntervalHours      = 2.0,
+    [string]$Project            = "H:\Github\Pong",
+    [string]$Provider           = "Phi4",
+    [double]$IntervalHours      = 1.0,
     [int]   $MaxMinutesPerCycle = 110
 )
 
@@ -41,7 +44,7 @@ function Write-Log([string]$msg) {
 }
 
 $cycle = 0
-Write-Log "Nova3D poll loop started — project: $Project, provider: $Provider, interval: ${IntervalHours}h"
+Write-Log "Automatica poll loop started — project: $Project, provider: $Provider, interval: ${IntervalHours}h"
 
 while ($true) {
     $cycle++

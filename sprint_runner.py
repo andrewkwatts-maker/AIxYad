@@ -2195,7 +2195,11 @@ class SprintRunner:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with _urlreq.urlopen(_req, timeout=60) as _resp:
+            # 240s: Phi4 / 14B-class models can take 60-120s to spin up
+            # cold (model load into VRAM) and another 30-60s to generate the
+            # initial 5-8 task list. 60s timeout was tripping the very first
+            # sprint of every fresh project.
+            with _urlreq.urlopen(_req, timeout=240) as _resp:
                 _data = json.loads(_resp.read().decode())
                 raw = _data.get("response", "")
         except Exception as exc:

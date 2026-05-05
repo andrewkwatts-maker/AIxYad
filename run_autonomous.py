@@ -384,6 +384,66 @@ def _init_project_if_needed(project_dir: Path, goal: str, provider: str, model: 
     conn.close()
 
 
+def _wake_up_scan(project_dir: Path, provider: str, log_fn=print) -> dict:
+    """On launch, walk the project tree and re-summarise any file whose
+    content has changed since the indexer last touched it.
+
+    The user may have hand-edited files between Automatica runs (or a
+    sibling tool like the IDE may have made changes). Without this scan,
+    the project standards / module docstrings / folder summaries / README
+    auto-section all drift out of date until the agent happens to edit the
+    same file again.
+
+    Cheap: SummaryIndexer.summarise_python_file's first action is an
+    embedded-hash comparison against the file's current non-comment content.
+    Files whose @automatica-summary hash matches current short-circuit
+    without ever calling Ollama. Only genuinely-changed files trigger a
+    summary refresh.
+
+    Returns a dict like {"files": N, "folders": N, "project": N}.
+    """
+    try:
+        import sys as _sys
+        _pkg_dir = Path(__file__).resolve().parent
+        if str(_pkg_dir) not in _sys.path:
+            _sys.path.insert(0, str(_pkg_dir))
+        import sqlite3 as _sq3
+        from agent_protocol import get_provider_config
+        from summary_indexer import SummaryIndexer
+
+        # Pull the right Ollama endpoint + summary model from the global DB
+        # so the wake-up scan uses the same model as the rest of the loop.
+        _global_db_path = Path.home() / ".automatica" / "automatica.db"
+        _endpoint = "http://localhost:11434"
+        _model = "llama3.2:3b"
+        try:
+            gdb = _sq3.connect(str(_global_db_path))
+            gdb.row_factory = _sq3.Row
+            cfg = get_provider_config(gdb, provider) or {}
+            _endpoint = cfg.get("endpoint", _endpoint)
+            _model = cfg.get("summary_model", "llama3.2:3b")
+            gdb.close()
+        except Exception:
+            pass
+
+        indexer = SummaryIndexer(
+            project_dir=project_dir, endpoint=_endpoint, model=_model,
+        )
+        log_fn("  [WAKEUP] scanning project for hand-edited / out-of-date files…")
+        counts = indexer.full_walk(force=False)
+        total = counts["files"] + counts["folders"] + counts["project"]
+        if total > 0:
+            log_fn(f"  [WAKEUP] refreshed {counts['files']} file / "
+                   f"{counts['folders']} folder / {counts['project']} project "
+                   f"summary block(s) — hand-edits detected, summaries now fresh")
+        else:
+            log_fn(f"  [WAKEUP] no changes since last run; summaries already current")
+        return counts
+    except Exception as exc:
+        log_fn(f"  [WAKEUP] scan failed: {exc}")
+        return {"files": 0, "folders": 0, "project": 0}
+
+
 def _replenish_via_review(project_dir: Path, provider: str, log_fn=print) -> int:
     """Mid-run backlog replenishment. Constructs a SprintRunner just long
     enough to call replenish_backlog_from_review, then closes it. Decoupled
@@ -790,6 +850,17 @@ def main():
     write_obs(f"## Initial backlog")
     counts = load_backlog_counts(project_dir)
     write_obs(f"Tasks: {counts}")
+
+    # ── Wake-up scan ────────────────────────────────────────────────────
+    # Detect hand-edits made between Automatica runs and refresh the
+    # corresponding summaries. The SummaryIndexer's hash-skip means only
+    # files whose non-comment content actually diverged from the last
+    # @automatica-summary tag get re-summarised — clean files are O(1)
+    # AST parse + hash compare, no LLM call.
+    try:
+        _wake_up_scan(project_dir, args.provider, write_obs)
+    except Exception as exc:
+        write_obs(f"  [WAKEUP] scan failed: {exc}")
 
     # S3-W10: auto-estimate complexity for default-complexity backlog tasks
     _auto_estimate_complexity(project_dir)

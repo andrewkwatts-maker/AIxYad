@@ -254,68 +254,109 @@ def _generate_claude_md(project_dir: Path, goal: str, language: str,
         except Exception:
             template_text = ""
 
-    common_block = (
-        "## Architectural principles\n\n"
-        "Apply SOLID rigorously:\n"
-        "- **Single Responsibility**: each module/class has one clear reason "
-        "to change.\n"
-        "- **Open/Closed**: extend by composition, not by editing core "
-        "classes after they ship.\n"
-        "- **Liskov / ISP / DIP**: keep interfaces small; depend on "
-        "abstractions, not concretions.\n\n"
-        "**DRY**: when similar logic appears in two places, extract a "
-        "helper. Don't copy-paste.\n\n"
-        "**Separation of concerns**: rendering / input / business logic / "
-        "configuration / persistence each live in their own module.\n\n"
-        "**Configuration**: prefer YAML for human-tweakable config "
-        "(hierarchical, supports comments). JSON only when a tool requires "
-        "it (e.g. package.json).\n"
+    # Per-language layout sketch. Drives the ALLOWED PATHS list so the
+    # agent gets concrete file-path bans up front (top of CLAUDE.md, before
+    # any 3K truncation can hide them). Falls back to a sensible Python
+    # layout when the language has no entry.
+    layout_by_lang = {
+        "python": [
+            "src/__init__.py", "src/main.py",
+            "src/<module>.py        # one file per concept",
+            "tests/test_<module>.py",
+            "config/<name>.yaml",
+            "build.bat              # pyinstaller invocation",
+            "requirements.txt",
+            "README.md", "STANDARDS.md (or CLAUDE.md)",
+        ],
+        "cpp": [
+            "src/<module>.cpp", "include/<module>.hpp",
+            "tests/test_<module>.cpp",
+            "CMakeLists.txt",
+            "config/<name>.yaml",
+            "README.md", "STANDARDS.md",
+        ],
+        "typescript": [
+            "src/<module>.ts", "src/index.ts",
+            "tests/<module>.test.ts",
+            "package.json", "tsconfig.json",
+            "README.md", "STANDARDS.md",
+        ],
+        "rust": [
+            "src/lib.rs", "src/main.rs", "src/<module>.rs",
+            "tests/<module>_test.rs",
+            "Cargo.toml",
+            "README.md", "STANDARDS.md",
+        ],
+    }
+    paths = layout_by_lang.get(language, layout_by_lang["python"])
+
+    layout_block = (
+        "## ALLOWED PATHS — every file you write MUST fit this layout\n\n"
+        "```\n"
+        f"{project_dir.name}/\n"
+        + "\n".join(f"├── {p}" for p in paths)
+        + "\n```\n\n"
+        "EXPLICITLY BANNED at the project root (write_file these and the\n"
+        "executor will warn you next turn):\n"
+        f"- `{project_dir.name.lower()}.py`  ← entry point lives in src/main.py, NEVER at root\n"
+        f"- `game.py`, `paddle.py`, `ball.py` at root  ← these go in src/\n"
+        f"- duplicate basenames (e.g. `paddle.py` AND `subdir/paddle.py`)\n"
+        f"- parallel folders for one concept: `paddle/`, `paddle_ai/`, `pong/`, `game/`\n"
+        f"- `*_ai/`, `*_helper/`, `*_utils/` sibling folders\n"
+        f"- inventing files the task description didn't name\n\n"
+        "When a task says REFACTOR or EXTRACT, you MUST `edit_file` an\n"
+        "existing path from the list above — never write to a NEW path\n"
+        "unless the task names that exact path explicitly.\n"
     )
 
     refactor_rule = (
         "## Refactor rule (HARD)\n\n"
-        "If a task says REFACTOR / EXTRACT / RENAME / SPLIT / OPTIMISE / "
-        "POLISH / ADD DOCSTRINGS for an existing file, you MUST `edit_file` "
-        "that file in place. You may add a new class WITHIN the same file, "
-        "but DO NOT create a new sibling file unless the task explicitly "
-        "names a new path that fits the project layout below.\n\n"
-        "Specifically banned during refactor tasks:\n"
-        "- Creating `paddle/movement.py` when `src/paddle.py` already exists.\n"
-        "- Creating `*_ai/`, `*_helper/`, `*_utils/` sibling folders\n"
-        "- Creating duplicate basenames (`foo.py` AND `subdir/foo.py`)\n"
+        "If a task title or description starts with REFACTOR / EXTRACT / "
+        "RENAME / SPLIT / MOVE / RESTRUCTURE / INLINE / MERGE / OPTIMISE / "
+        "POLISH / ADD DOCSTRINGS, you MUST `edit_file` the existing target "
+        "in place. You may add a new class WITHIN the same file, but DO "
+        "NOT create a new sibling file unless the task description names "
+        "a new path explicitly. The executor will warn you on basename "
+        "collisions across folders — treat that warning as a near-failure "
+        "and `discard_file` the new write.\n"
     )
 
     quality_block = (
         "## Quality gates\n\n"
-        "- Tests pass under the project's standard test runner before any "
-        "task closes.\n"
+        "- Tests pass before any task closes (`pytest tests/` for Python).\n"
         "- Type hints / annotations on public APIs.\n"
-        "- Docstrings on classes + entry points (the indexer auto-fills "
-        "missing ones).\n"
-        "- User-facing errors handled with clear messages — no silent "
-        "crashes.\n"
-        "- ≥90% line coverage on unit + integration tests for code paths "
-        "the user invokes.\n"
+        "- Docstrings on classes + entry points (indexer auto-fills missing).\n"
+        "- User-facing errors handled with clear messages — no silent crashes.\n"
+        "- ≥90% line coverage on code paths the user invokes.\n"
     )
 
-    layout_hint = (
-        "## Project layout (must stay this shape)\n\n"
-        "Use the layout the standards template above recommends. Do NOT\n"
-        "scatter source files at the project root if the standard suggests\n"
-        "src/. Do NOT create parallel folders (`game/`, `pong/`, `paddle/`)\n"
-        "for the same concept.\n"
+    common_block = (
+        "## Architectural principles\n\n"
+        "Apply SOLID rigorously:\n"
+        "- **Single Responsibility**: each module/class has ONE reason to change.\n"
+        "- **Open/Closed**: extend by composition, not by editing shipped classes.\n"
+        "- **Liskov / ISP / DIP**: small interfaces, depend on abstractions.\n\n"
+        "**DRY**: extract a helper when logic repeats. Don't copy-paste.\n\n"
+        "**Separation of concerns**: rendering / input / business logic / "
+        "configuration / persistence each live in their own module.\n\n"
+        "**Configuration**: prefer YAML for human-tweakable config (supports "
+        "comments + hierarchy). JSON only when a tool requires it.\n"
     )
 
+    # ORDER MATTERS — the prompt-builder caps standards text at 6000 chars,
+    # so the rules that ban duplicate files MUST be in the first ~3000.
+    # Layout block, refactor rule, then quality block, then SOLID, finally
+    # the language template (which often runs 5-7 KB and goes last).
     body = (
         f"# Project Standards — {project_dir.name}\n\n"
         f"_Auto-generated by Automatica from `standards/{language}.md` + "
         f"the project goal. Hand-edit this file to override; the runtime "
         f"won't replace it once it exists._\n\n"
         f"## Goal\n\n{goal.strip() or '(no goal set)'}\n\n"
-        + common_block + "\n"
-        + layout_hint + "\n"
-        + quality_block + "\n"
+        + layout_block + "\n"
         + refactor_rule + "\n"
+        + quality_block + "\n"
+        + common_block + "\n"
         f"## Language standards (from standards/{language}.md)\n\n"
         + (template_text if template_text else
            f"_(no language template found at standards/{language}.md — "

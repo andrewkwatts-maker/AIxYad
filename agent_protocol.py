@@ -366,11 +366,14 @@ class AgentProtocol:
                 if _std_path.is_file():
                     _std_text = _std_path.read_text(encoding="utf-8",
                                                       errors="replace")
-                    # Trim aggressively — even with a 4096-token context the
-                    # standards block can't dominate. Keep the first ~3K chars
-                    # which is enough for the principles + structure.
-                    if len(_std_text) > 3000:
-                        _std_text = _std_text[:3000] + "\n…[standards truncated]…"
+                    # Trim — but generously. The first 6K chars cover the
+                    # auto-generated header (goal + ALLOWED PATHS + refactor
+                    # rule + quality + SOLID), which is everything the
+                    # agent must reckon with. The language-template appendix
+                    # (5-7 KB of PEP 8 etc) gets dropped silently when over
+                    # cap; that's fine — it's reference, not enforcement.
+                    if len(_std_text) > 6000:
+                        _std_text = _std_text[:6000] + "\n…[standards truncated]…"
                     request['project_standards'] = {
                         'source': _candidate,
                         'text': _std_text,

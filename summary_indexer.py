@@ -237,9 +237,83 @@ def _ast_dump_no_docstrings(src: str) -> str:
         return stripped
 
 
+def _format_module_docstring(body: str) -> str:
+    """Render a body string as a triple-quoted module docstring with
+    consistent quotes. Escapes any embedded ``\"\"\"`` so the output parses."""
+    safe = body.replace('"""', '\\"\\"\\"')
+    return f'"""{safe}"""'
+
+
+def _splice_module_docstring(src: str, new_docstring: str,
+                              existing_lineno: Optional[int],
+                              existing_end_lineno: Optional[int]) -> str:
+    """Replace (or insert) the module docstring at *line level*, preserving
+    every other byte of the source including ``#`` comments, blank lines,
+    encoding declarations, and original formatting.
+
+    ``ast.unparse`` was previously used here and silently dropped GUID
+    headers and inline comments — text splicing avoids that entirely."""
+    lines = src.splitlines(keepends=True)
+    if existing_lineno and existing_end_lineno:
+        # Replace lines [existing_lineno, existing_end_lineno] (1-indexed).
+        return (
+            "".join(lines[: existing_lineno - 1])
+            + new_docstring + "\n"
+            + "".join(lines[existing_end_lineno :])
+        )
+
+    # No existing docstring — insert as early as possible while preserving
+    # special leading lines that must come first in a Python source file:
+    #   1. shebang (#!...) on line 1
+    #   2. encoding declaration (# -*- coding: ... -*- or # coding: ...)
+    #      on line 1 or 2 per PEP 263
+    #   3. existing leading blank lines
+    insert_at = 0
+    if lines and lines[0].startswith("#!"):
+        insert_at = 1
+    if (insert_at < len(lines)
+            and re.match(r"^[ \t]*#.*coding[:=][ \t]*[-\w.]+",
+                          lines[insert_at] if insert_at < len(lines) else "")):
+        insert_at += 1
+
+    head = "".join(lines[:insert_at])
+    tail = "".join(lines[insert_at:])
+    # Ensure exactly one blank line between docstring and following code.
+    if tail and not tail.startswith("\n"):
+        return head + new_docstring + "\n\n" + tail
+    return head + new_docstring + "\n" + tail
+
+
+def _has_meaningful_comments_outside_docstring(src: str,
+                                                doc_lineno: Optional[int],
+                                                doc_end_lineno: Optional[int]
+                                                ) -> bool:
+    """Scan the source for any ``#`` line comment outside the existing
+    module docstring's line range. Used to detect files where rewriting
+    via ast.unparse would have dropped meaningful information."""
+    for i, line in enumerate(src.splitlines(), start=1):
+        if doc_lineno and doc_end_lineno and doc_lineno <= i <= doc_end_lineno:
+            continue
+        stripped = line.lstrip()
+        if not stripped.startswith("#"):
+            continue
+        # Skip uninteresting comment-only files like shebangs and coding decls.
+        if stripped.startswith("#!"):
+            continue
+        if re.match(r"^#.*coding[:=][ \t]*[-\w.]+", stripped):
+            continue
+        return True
+    return False
+
+
 def summarise_python_file(path: Path, *, endpoint: str, model: str,
                            force: bool = False) -> bool:
     """Generate or refresh the module docstring for a Python file.
+
+    Uses a text-preserving rewrite: only the docstring's line span is
+    replaced (or inserted at the top, after any shebang / coding line).
+    Everything else — ``#`` comments, GUID headers, blank lines, original
+    formatting — is preserved byte-for-byte.
 
     Returns True if the file was rewritten, False if skipped (no change
     needed, parse failure, LLM failure, or guardrail tripped).
@@ -260,9 +334,13 @@ def summarise_python_file(path: Path, *, endpoint: str, model: str,
     existing_doc = _python_module_docstring(tree)
     existing_text = ""
     is_ours = False
+    doc_lineno = None
+    doc_end_lineno = None
     if existing_doc is not None:
         existing_text = existing_doc.value.value or ""
         is_ours = SUMMARY_MAGIC in existing_text
+        doc_lineno = existing_doc.lineno
+        doc_end_lineno = existing_doc.end_lineno
 
     # Hash the non-comment content. If it matches the hash embedded in our
     # last-generated summary, nothing about the LOGIC changed — skip the LLM.
@@ -273,8 +351,7 @@ def summarise_python_file(path: Path, *, endpoint: str, model: str,
         if m and m.group(1) == cur_hash:
             return False  # cache hit, nothing to do
 
-    # Conservative rule: if a hand-written docstring is present and we don't
-    # own it, don't touch it. (Future: opt-in upgrade prompt.)
+    # Conservative: never overwrite a hand-written docstring.
     if existing_doc is not None and not is_ours:
         return False
 
@@ -285,7 +362,6 @@ def summarise_python_file(path: Path, *, endpoint: str, model: str,
     if not raw or len(raw) < 20:
         return False
 
-    # Tag the body with our magic + hash so next refresh can self-skip.
     body = raw.strip().strip('"').strip("'").strip()
     keywords = _extract_keywords(body)
     summary_block = (
@@ -294,22 +370,20 @@ def summarise_python_file(path: Path, *, endpoint: str, model: str,
         f"keywords={','.join(keywords)} "
         f"generated={datetime.now().isoformat(timespec='seconds')}"
     )
+    new_docstring = _format_module_docstring(summary_block)
 
-    # Build the rewritten source.
-    new_doc = ast.Expr(value=ast.Constant(value=summary_block))
-    new_tree = ast.parse(src)
-    if _python_module_docstring(new_tree) is not None:
-        new_tree.body[0] = new_doc
-    else:
-        new_tree.body.insert(0, new_doc)
-    ast.fix_missing_locations(new_tree)
+    # Text-level splice — preserves comments, GUID headers, formatting.
+    new_src = _splice_module_docstring(src, new_docstring,
+                                        doc_lineno, doc_end_lineno)
+
+    # Defence-in-depth: re-parse the new source and verify the AST is
+    # equivalent to the original *modulo docstrings*. If unparse-able or
+    # structurally drifted, abort.
     try:
-        new_src = ast.unparse(new_tree)
-    except Exception as exc:
-        log.warning("ast.unparse failed for %s: %s", path, exc)
+        ast.parse(new_src)
+    except SyntaxError as exc:
+        log.warning("Rewrite produced unparseable file %s: %s", path, exc)
         return False
-
-    # Hard guardrail — non-docstring AST must be byte-identical pre vs post.
     if _ast_dump_no_docstrings(src) != _ast_dump_no_docstrings(new_src):
         log.warning("Guardrail tripped: %s — non-docstring AST drift, "
                     "discarding summary rewrite", path)

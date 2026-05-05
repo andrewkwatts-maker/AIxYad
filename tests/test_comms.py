@@ -1407,3 +1407,304 @@ class TestAPIClientConnection:
             result = c.add_task(1, {'title': 'X'})
         assert result['success'] is False
         assert result['error'] == 'timeout'
+
+
+# ── 16. Wiki Endpoint ─────────────────────────────────────────────────────────
+
+class TestWikiEndpoint:
+    """GET /api/wiki/{project_path} — C-07 path traversal + scanner errors."""
+
+    def test_happy_path(self, tc):
+        wiki_data = {'files': [{'path': 'foo.py', 'symbols': ['MyClass']}]}
+        with patch('security.safe_project_path', return_value='/safe/proj'), \
+             patch('project_scanner.build_file_wiki', return_value=wiki_data):
+            r = tc.get('/api/wiki/myproject')
+        assert r.status_code == 200
+        assert r.json() == wiki_data
+
+    def test_path_traversal_rejected(self, tc):
+        # URL normalisation strips literal '..'; test the behaviour at the
+        # safe_project_path boundary by injecting a ValueError for any path.
+        with patch('security.safe_project_path',
+                   side_effect=ValueError('path traversal detected')):
+            r = tc.get('/api/wiki/evil-project')
+        assert r.status_code == 400
+        assert 'path traversal' in r.json()['detail']
+
+    def test_scanner_failure_returns_500(self, tc):
+        with patch('security.safe_project_path', return_value='/safe/proj'), \
+             patch('project_scanner.build_file_wiki',
+                   side_effect=RuntimeError('scanner crashed')):
+            r = tc.get('/api/wiki/myproject')
+        assert r.status_code == 500
+        assert 'scanner crashed' in r.json()['detail']
+
+    def test_nested_path_forwarded_to_safe_check(self, tc):
+        with patch('security.safe_project_path', return_value='/safe/dir') as safe_mock, \
+             patch('project_scanner.build_file_wiki', return_value={'files': []}):
+            tc.get('/api/wiki/org/repo/subdir')
+        safe_mock.assert_called_once_with('org/repo/subdir')
+
+
+# ── 17. Session Expiry ────────────────────────────────────────────────────────
+
+class TestSessionExpiry:
+    """C-16 session token lifecycle: issue, expire, logout, independence."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_sessions(self):
+        _api_server_mod._sessions.clear()
+        yield
+        _api_server_mod._sessions.clear()
+
+    def _authed_tc(self, monkeypatch):
+        monkeypatch.setenv('AUTOMATICA_API_KEY', 'testkey')
+        from fastapi.testclient import TestClient
+        return TestClient(_build_app())
+
+    def test_expired_token_rejected(self, monkeypatch):
+        tc = self._authed_tc(monkeypatch)
+        token = 'deadbeef' * 8
+        _api_server_mod._sessions[token] = time.monotonic() - 1  # already past
+        with patch('security.safe_project_path', return_value='/safe'), \
+             patch('project_scanner.build_file_wiki', return_value={'files': []}):
+            r = tc.get('/api/wiki/proj', headers={'Authorization': f'Bearer {token}'})
+        assert r.status_code == 401
+
+    def test_active_token_accepted(self, monkeypatch):
+        tc = self._authed_tc(monkeypatch)
+        token = tc.post('/api/auth/login', json={'api_key': 'testkey'}).json()['token']
+        with patch('security.safe_project_path', return_value='/safe'), \
+             patch('project_scanner.build_file_wiki', return_value={'files': []}):
+            r = tc.get('/api/wiki/proj', headers={'Authorization': f'Bearer {token}'})
+        assert r.status_code == 200
+
+    def test_logout_removes_session(self, monkeypatch):
+        tc = self._authed_tc(monkeypatch)
+        token = tc.post('/api/auth/login', json={'api_key': 'testkey'}).json()['token']
+        assert token in _api_server_mod._sessions
+        tc.post('/api/auth/logout', headers={'Authorization': f'Bearer {token}'})
+        assert token not in _api_server_mod._sessions
+
+    def test_two_sessions_are_independent(self, monkeypatch):
+        tc = self._authed_tc(monkeypatch)
+        t1 = tc.post('/api/auth/login', json={'api_key': 'testkey'}).json()['token']
+        t2 = tc.post('/api/auth/login', json={'api_key': 'testkey'}).json()['token']
+        assert t1 != t2
+        tc.post('/api/auth/logout', headers={'Authorization': f'Bearer {t1}'})
+        assert t1 not in _api_server_mod._sessions
+        assert t2 in _api_server_mod._sessions
+
+
+# ── 18. Database Failures ─────────────────────────────────────────────────────
+
+class TestDatabaseFailures:
+    """Global DB I/O errors propagate as 500 across affected endpoints."""
+
+    def _broken_conn(self):
+        conn = MagicMock()
+        cursor = MagicMock()
+        cursor.fetchall.side_effect = Exception('disk I/O error')
+        cursor.fetchone.side_effect = Exception('disk I/O error')
+        conn.execute.return_value = cursor
+        return conn
+
+    def test_projects_500_on_db_error(self):
+        from fastapi.testclient import TestClient
+        with patch('automatica_db.init_global_db', return_value=self._broken_conn()):
+            r = TestClient(_build_app()).get('/api/projects')
+        assert r.status_code == 500
+
+    def test_logs_500_on_db_error(self):
+        from fastapi.testclient import TestClient
+        with patch('automatica_db.init_global_db', return_value=self._broken_conn()):
+            r = TestClient(_build_app()).get('/api/logs')
+        assert r.status_code == 500
+
+    def test_providers_500_on_db_error(self):
+        from fastapi.testclient import TestClient
+        with patch('automatica_db.init_global_db', return_value=self._broken_conn()):
+            r = TestClient(_build_app()).get('/api/providers')
+        assert r.status_code == 500
+
+    def test_agents_500_on_db_error(self):
+        from fastapi.testclient import TestClient
+        with patch('automatica_db.init_global_db', return_value=self._broken_conn()):
+            r = TestClient(_build_app()).get('/api/agents')
+        assert r.status_code == 500
+
+
+# ── 19. Request Validation ────────────────────────────────────────────────────
+
+class TestRequestValidation:
+    """Pydantic model constraints and manual validation gates."""
+
+    def test_task_patch_complexity_too_high_returns_422(self, tc):
+        r = tc.patch('/api/tasks/1', json={'complexity': 99})
+        assert r.status_code == 422
+
+    def test_task_patch_complexity_too_low_returns_422(self, tc):
+        r = tc.patch('/api/tasks/1', json={'complexity': 0})
+        assert r.status_code == 422
+
+    def test_task_patch_title_too_long_returns_422(self, tc):
+        r = tc.patch('/api/tasks/1', json={'title': 'x' * 501})
+        assert r.status_code == 422
+
+    def test_sprint_start_missing_project_id_returns_400(self, tc):
+        r = tc.post('/api/sprints/start', json={'goal': 'do something'})
+        assert r.status_code == 400
+
+    def test_agent_invalid_slug_returns_422(self, tc):
+        r = tc.post('/api/agents', json={'slug': 'UPPER_CASE!', 'role': 'x'})
+        assert r.status_code == 422
+
+    def test_standard_empty_name_returns_422(self, tc):
+        r = tc.post('/api/standards', json={'name': '', 'content': 'body'})
+        assert r.status_code == 422
+
+
+# ── 20. Concurrent Sprint Starts ──────────────────────────────────────────────
+
+class TestConcurrentSprints:
+    """Race condition safety: simultaneous /api/sprints/start calls."""
+
+    def test_three_concurrent_starts_all_get_responses(self):
+        import threading
+
+        app = _build_app()
+        from fastapi.testclient import TestClient
+        tc = TestClient(app)
+
+        results: list[int] = []
+        lock = threading.Lock()
+
+        def _call():
+            r = tc.post('/api/sprints/start', json={'project_id': 99999})
+            with lock:
+                results.append(r.status_code)
+
+        threads = [threading.Thread(target=_call) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert len(results) == 3
+        for code in results:
+            assert code in (404, 500)
+
+    def test_missing_project_id_always_400_never_500(self, tc):
+        for _ in range(3):
+            r = tc.post('/api/sprints/start', json={})
+            assert r.status_code == 400
+
+
+# ── 21. Webhook Push Event ────────────────────────────────────────────────────
+
+class TestWebhookPushEvent:
+    """F-17 /api/webhooks/receive — push_event wiring and edge cases."""
+
+    def test_push_event_called_with_correct_args(self, app):
+        from fastapi.testclient import TestClient
+        push_mock = MagicMock()
+        app.state.push_event = push_mock
+        body = {'event': 'push', 'repo': 'test-repo', 'branch': 'main'}
+        r = TestClient(app).post('/api/webhooks/receive', json=body)
+        assert r.status_code == 200
+        push_mock.assert_called_once_with(
+            'webhook_received',
+            {'event_type': 'push', 'data': body},
+        )
+
+    def test_response_contains_event_type(self, app):
+        from fastapi.testclient import TestClient
+        app.state.push_event = MagicMock()
+        r = TestClient(app).post('/api/webhooks/receive', json={'event': 'ci_pass'})
+        assert r.json()['event'] == 'ci_pass'
+
+    def test_no_push_event_attr_does_not_crash(self, app):
+        from fastapi.testclient import TestClient
+        del app.state.push_event
+        r = TestClient(app).post('/api/webhooks/receive', json={'event': 'ping'})
+        assert r.status_code == 200
+
+    def test_missing_event_key_defaults_to_unknown(self, app):
+        from fastapi.testclient import TestClient
+        push_mock = MagicMock()
+        app.state.push_event = push_mock
+        r = TestClient(app).post('/api/webhooks/receive', json={'repo': 'test'})
+        assert r.json()['event'] == 'unknown'
+        push_mock.assert_called_once_with(
+            'webhook_received',
+            {'event_type': 'unknown', 'data': {'repo': 'test'}},
+        )
+
+
+# ── 22. Cross-Project Task Lookups ────────────────────────────────────────────
+
+class TestCrossProjectTasks:
+    """Task endpoints scan all known_projects — absent task/project → 404."""
+
+    def _empty_conn(self):
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        cursor.fetchone.return_value = None
+        conn = MagicMock()
+        conn.execute.return_value = cursor
+        return conn
+
+    def test_patch_nonexistent_task_returns_404(self):
+        from fastapi.testclient import TestClient
+        with patch('automatica_db.init_global_db', return_value=self._empty_conn()):
+            r = TestClient(_build_app()).patch('/api/tasks/99999', json={'status': 'done'})
+        assert r.status_code == 404
+
+    def test_delete_nonexistent_task_returns_404(self):
+        from fastapi.testclient import TestClient
+        with patch('automatica_db.init_global_db', return_value=self._empty_conn()):
+            r = TestClient(_build_app()).delete('/api/tasks/99999')
+        assert r.status_code == 404
+
+    def test_get_tasks_for_nonexistent_project_returns_404(self):
+        from fastapi.testclient import TestClient
+        with patch('automatica_db.init_global_db', return_value=self._empty_conn()):
+            r = TestClient(_build_app()).get('/api/projects/99999/tasks')
+        assert r.status_code == 404
+
+
+# ── 23. Rate Limit Recovery ───────────────────────────────────────────────────
+
+class TestRateLimitRecovery:
+    """C-04 sliding-window eviction: stale buckets clear, fresh buckets block."""
+
+    _IP = 'testclient'  # Starlette TestClient sets request.client.host = 'testclient'
+
+    def test_stale_timestamps_allow_new_request(self, tc):
+        """60 timestamps older than _RATE_WINDOW are purged — request succeeds."""
+        old = time.monotonic() - (_api_server_mod._RATE_WINDOW + 5)
+        _api_server_mod._rate_buckets[self._IP] = [old] * _api_server_mod._RATE_LIMIT
+        r = tc.get('/api/status')
+        assert r.status_code == 200
+
+    def test_fresh_timestamps_trigger_429(self, tc):
+        """60 fresh timestamps → next request is rate-limited."""
+        now = time.monotonic()
+        _api_server_mod._rate_buckets[self._IP] = [now] * _api_server_mod._RATE_LIMIT
+        r = tc.get('/api/status')
+        assert r.status_code == 429
+
+    def test_partial_fill_still_allows_entry(self, tc):
+        """Half-full bucket leaves room — request gets through."""
+        now = time.monotonic()
+        half = _api_server_mod._RATE_LIMIT // 2
+        _api_server_mod._rate_buckets[self._IP] = [now] * half
+        r = tc.get('/api/status')
+        assert r.status_code == 200
+
+    def test_429_body_contains_error_key(self, tc):
+        now = time.monotonic()
+        _api_server_mod._rate_buckets[self._IP] = [now] * _api_server_mod._RATE_LIMIT
+        r = tc.get('/api/status')
+        assert r.status_code == 429
+        assert r.json().get('error') == 'Rate limit exceeded'

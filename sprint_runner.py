@@ -2771,7 +2771,7 @@ def main():
     except Exception:
         pass
     if not pipeline_config:
-        config_path = Path(args.config) if args.config else (_pkg_dir / "pipeline-config.json")
+        config_path = Path(args.config) if args.config else (_pkg_dir / "config" / "pipeline-config.json")
         if config_path.is_file():
             try:
                 pipeline_config = json.loads(config_path.read_text(encoding="utf-8", errors="replace"))

@@ -1,0 +1,64 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env*
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Test runtime fixtures (created by integration tests)
+test_saves/
+test_saves_validation/
+
+# Runtime databases — never commit
+automatica.db
+automatica.db-shm
+automatica.db-wal
+*.db-shm
+*.db-wal
+project.db
+
+# Runtime output
+logs/
+temp/
+
+# Per-run artifacts left by stopped/crashed agent runs
+*.lock
+nul
+build_stdout.txt
+build_stderr.txt
+oneshot*.log
+pong_loop.log
+pong_overnight.log
+
+# Mock/test artifacts that shouldn't have leaked into the tree
+MagicMock/
+
+# Secrets
+secrets/
+secrets/providers.json
+secrets/*.secret.json
+*.key
+*.pem
+*.secret
+
+# IDE / editor + local tool settings
+.vscode/
+.idea/
+.editorconfig
+.gitattributes
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+.automatica/

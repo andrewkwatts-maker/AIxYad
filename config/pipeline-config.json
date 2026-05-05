@@ -1,0 +1,23 @@
+{
+  "steps": {
+    "1":  {"name": "Git housekeeping",                    "action": "builtin", "agent": "",            "command": "",  "prompt": "", "instructions": ""},
+    "2":  {"name": "Check backlog / Planning Agent",      "action": "builtin", "agent": "",            "command": "",  "prompt": "", "instructions": ""},
+    "3":  {"name": "Pop next task",                       "action": "builtin", "agent": "",            "command": "",  "prompt": "", "instructions": ""},
+    "4":  {"name": "Wiki Index",                          "action": "builtin", "agent": "",            "command": "",  "prompt": "", "instructions": "Call project_scanner.build_file_wiki() to refresh the codebase wiki index before task execution. The result is cached to .automatica/wiki_index.json and injected into all subsequent agent requests as wiki_summary."},
+    "5":  {"name": "Pre-task build",                      "action": "cmd",     "agent": "",            "command": "cmake --build build --config Release -j", "prompt": "", "instructions": ""},
+    "6":  {"name": "Fix build errors (Build Fixer Agent)","action": "agent",   "agent": "Developer",   "command": "",  "prompt": "Fix all compilation errors. Read error messages, fix source files, rebuild until 0 errors.", "instructions": ""},
+    "7":  {"name": "Pre-task tests",                      "action": "cmd",     "agent": "",            "command": "cd build && ctest -C Release -j4 --output-on-failure", "prompt": "", "instructions": ""},
+    "8":  {"name": "Fix test failures (Test Fixer Agent)","action": "agent",   "agent": "Tester",      "command": "",  "prompt": "Fix all failing tests. Read test output, fix root cause, rerun until all pass.", "instructions": ""},
+    "9":  {"name": "Task Agent (main work)",              "action": "agent",   "agent": "Developer",   "command": "",  "prompt": "", "instructions": ""},
+    "10": {"name": "Subtask Review",                      "action": "builtin", "agent": "",            "command": "",  "prompt": "", "instructions": "After task execution, check for any incomplete subtasks. If subtasks remain undone, re-queue the parent task with status 'backlog' so it is retried in the next sprint iteration."},
+    "11": {"name": "Post-task build verify",              "action": "cmd",     "agent": "",            "command": "cmake --build build --config Release -j", "prompt": "", "instructions": ""},
+    "12": {"name": "Post-task test verify",               "action": "cmd",     "agent": "",            "command": "cd build && ctest -C Release -j4 --output-on-failure", "prompt": "", "instructions": ""},
+    "13": {"name": "Fix regressions (Regression Fixer)",  "action": "agent",   "agent": "Developer",   "command": "",  "prompt": "Fix any regressions introduced by the task agent.", "instructions": ""},
+    "14": {"name": "Archive, commit, push",               "action": "builtin", "agent": "",            "command": "",  "prompt": "", "instructions": ""}
+  },
+  "empty_backlog": {
+    "action": "agent",
+    "agent": "Orchestrator",
+    "prompt": "The TODO.md backlog is EMPTY. Scan the codebase for TODO/FIXME/STUB/placeholder comments, assess priority, and write 15-30 new tasks to TODO.md using ---TASK_START--- / ---TASK_END--- format."
+  }
+}

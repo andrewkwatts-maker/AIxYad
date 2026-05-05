@@ -1,0 +1,192 @@
+{
+  "project": {
+    "name": "Automatica",
+    "prefix": "AC",
+    "description": "AI Team Management System",
+    "version": "1.0.0"
+  },
+
+  "vcs": {
+    "type": "git",
+    "enabled": true,
+
+    "git": {
+      "remote": "origin",
+      "main_branch": "main",
+      "feature_branch_prefix": "feature/",
+      "auto_push": false,
+      "push_on_task_complete": true,
+      "use_task_as_commit_message": true,
+      "sign_commits": false,
+      "commit_prefix": "",
+      "require_clean_working_tree": true
+    },
+
+    "svn": {
+      "enabled": false,
+      "executable": "svn",
+      "working_copy_path": "",
+      "auto_commit": false,
+      "auto_update": true,
+      "cleanup_before_update": true
+    }
+  },
+
+  "paths": {
+    "temp_backup": "./temp",
+    "todo_file": "./TODO.md",
+    "current_task_file": "./CURRENT_TASK.md",
+    "completed_file": "./Completed.md",
+    "scripts_dir": "./scripts",
+    "logs_dir": "./logs",
+    "specs_dir": "./specs",
+    "docs_dir": "./docs"
+  },
+
+  "task_management": {
+    "auto_backup_files": true,
+    "require_diff_before_commit": true,
+    "log_all_operations": true,
+    "default_priority": "MEDIUM",
+    "default_agent": "Developer",
+    "task_id_prefix": "TASK",
+    "auto_increment_task_id": true,
+    "archive_completed_tasks": true
+  },
+
+  "testing": {
+    "enabled": true,
+    "run_tests_before_commit": false,
+    "coverage_threshold": 80,
+    "test_command": "",
+    "coverage_command": "",
+    "frameworks": {
+      "javascript": "jest",
+      "python": "pytest",
+      "rust": "cargo test",
+      "go": "go test"
+    }
+  },
+
+  "linting": {
+    "enabled": true,
+    "auto_fix": false,
+    "run_before_commit": false,
+    "tools": {
+      "javascript": "eslint",
+      "typescript": "eslint",
+      "python": "ruff",
+      "rust": "clippy",
+      "go": "golint",
+      "shell": "shellcheck"
+    }
+  },
+
+  "security": {
+    "scan_on_commit": false,
+    "scan_dependencies": true,
+    "block_on_critical": true,
+    "secret_patterns": [
+      "password\\s*=",
+      "api[_-]?key\\s*=",
+      "secret\\s*=",
+      "AWS_ACCESS",
+      "PRIVATE[_-]KEY"
+    ]
+  },
+
+  "agents": {
+    "parallel_execution": true,
+    "max_parallel_agents": 3,
+    "require_review_before_merge": true,
+    "auto_assign_agents": true,
+    "default_workflow": "Developer -> Tester -> CodeReviewer",
+    "escalation_enabled": true
+  },
+
+  "documentation": {
+    "auto_generate": false,
+    "generate_on_release": true,
+    "include_private": false,
+    "output_format": "markdown"
+  },
+
+  "notifications": {
+    "enabled": false,
+    "on_task_complete": false,
+    "on_task_blocked": false,
+    "on_error": false,
+    "on_security_issue": true,
+    "on_sprint_complete": true,
+    "webhook_url": ""
+  },
+
+  "email": {
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "smtp_user": "",
+    "smtp_password": "",
+    "use_tls": true,
+    "from_address": "automaticaemailagent@gmail.com",
+    "recipients": ["AndrewKWatts@gmail.com"]
+  },
+
+  "sprint": {
+    "default_duration_days": 14,
+    "auto_email_on_complete": true,
+    "archive_reports": true,
+    "report_next_tasks_preview": 5
+  },
+
+  "output": {
+    "color": true,
+    "verbose": false,
+    "timestamps": true,
+    "compact": false
+  },
+
+  "polling": {
+    "enabled": false,
+    "interval_minutes": 55,
+    "max_cycles": 0,
+    "project_dir": "",
+    "build_command": "",
+    "test_command": "",
+    "pre_task_commands": [],
+    "post_task_commands": [],
+    "log_retention_days": 7
+  },
+
+  "subprocess_cli": {
+    "executable": "",
+    "args": [],
+    "prompt_template": "./templates/overnight-prompt.md",
+    "model": ""
+  },
+
+  "ollama": {
+    "endpoint": "http://localhost:11434",
+    "model": "gemma3:4b",
+    "num_predict": 4096,
+    "temperature": 0.1,
+    "max_history_items": 12,
+    "max_result_chars": 600,
+    "max_agent_def_chars": 2500,
+    "action_filter": [
+      "read_file", "write_file", "edit_file", "list_files",
+      "search", "query_file_structure", "query_files", "query_file_section",
+      "query_wiki", "search_by_guid",
+      "run_command", "step_done", "need_help"
+    ]
+  },
+
+  "ollama_models": {
+    "gemma3:4b":         { "notes": "4B — default offline model, good JSON/reasoning ~30s/call" },
+    "gemma3:12b":        { "notes": "12B — higher quality, ~90s/call" },
+    "phi4:latest":       { "notes": "14B — high quality JSON, ~3 min/call" },
+    "llama3.2:3b":       { "notes": "3B — fast ~20s/call, decent JSON" },
+    "llama3.2:1b":       { "notes": "1B — very fast ~8s/call, simple tasks only" },
+    "mistral:latest":    { "notes": "7B — ~60s/call, good instruction following" },
+    "llama3.1:latest":   { "notes": "8B — ~90s/call, strong reasoning" }
+  }
+}

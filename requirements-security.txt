@@ -1,0 +1,7 @@
+# Security scanning tools for H:\Github\Automatica
+# Run: pip install -r requirements-security.txt
+# Then: python scripts/security_audit.py
+
+pip-audit>=2.6.0
+bandit>=1.7.0
+safety>=3.0.0

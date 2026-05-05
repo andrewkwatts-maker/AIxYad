@@ -1,0 +1,162 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Automatica Agent Protocol Schema",
+  "description": "JSON Schema for validating request and response objects in the Automatica agent protocol.",
+
+  "definitions": {
+    "request": {
+      "type": "object",
+      "required": ["protocol", "session_id", "sequence", "task", "available_actions"],
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "const": "automatica-agent/1.0",
+          "description": "Protocol identifier and version."
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Unique session identifier for this agent loop."
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based iteration counter within the loop."
+        },
+        "task": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string" },
+            "description": { "type": "string" },
+            "priority": { "type": "string" },
+            "agent": { "type": "string" },
+            "value": { "type": "string" },
+            "acceptance_criteria": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["title"]
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "project_dir": { "type": "string" },
+            "git_status": { "type": "string" },
+            "git_branch": { "type": "string" },
+            "git_changes": { "type": "array", "items": { "type": "string" } },
+            "build_status": { "type": "string" },
+            "build_log_tail": { "type": "string" },
+            "test_status": { "type": "string" },
+            "test_log_tail": { "type": "string" },
+            "build_system": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "instructions": {
+          "type": "object",
+          "properties": {
+            "step_prompt": { "type": "string" },
+            "agent_role": { "type": "string" },
+            "agent_definition": { "type": "string" },
+            "standards": { "type": "string" },
+            "expert": { "type": "string" }
+          }
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["role", "content"],
+            "properties": {
+              "role": { "type": "string", "enum": ["assistant", "system"] },
+              "content": { "type": "string" }
+            }
+          }
+        },
+        "permissions": {
+          "type": "object",
+          "properties": {
+            "can_read_file": { "type": "boolean" },
+            "can_write_file": { "type": "boolean" },
+            "can_edit_file": { "type": "boolean" },
+            "can_delete_file": { "type": "boolean" },
+            "can_create_file": { "type": "boolean" },
+            "can_run_command": { "type": "boolean" },
+            "can_search": { "type": "boolean" },
+            "can_commit": { "type": "boolean" },
+            "can_push": { "type": "boolean" },
+            "allowed_commands": { "type": "array", "items": { "type": "string" } },
+            "blocked_commands": { "type": "array", "items": { "type": "string" } },
+            "blocked_paths": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "available_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "description", "params"],
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "params": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+
+    "response": {
+      "type": "object",
+      "required": ["action", "params"],
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "read_file", "write_file", "edit_file",
+            "search", "list_files",
+            "run_command", "run_script",
+            "commit",
+            "step_done", "need_help"
+          ],
+          "description": "The action the AI agent wants to perform."
+        },
+        "params": {
+          "type": "object",
+          "description": "Action-specific parameters. Schema varies by action."
+        },
+        "reasoning": {
+          "type": "string",
+          "description": "Optional explanation of why the agent chose this action."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "result": {
+      "type": "object",
+      "required": ["success"],
+      "properties": {
+        "success": { "type": "boolean" },
+        "summary": { "type": "string" },
+        "reason": { "type": "string" },
+        "escalate_to": { "type": "string" },
+        "files_changed": { "type": "array", "items": { "type": "string" } },
+        "iterations": { "type": "integer", "minimum": 0 },
+        "duration": { "type": "number", "description": "Elapsed time in seconds." },
+        "action_log": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "timestamp": { "type": "string" },
+              "action": { "type": "string" },
+              "params": { "type": "object" },
+              "success": { "type": "boolean" },
+              "reasoning": { "type": "string" },
+              "summary": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

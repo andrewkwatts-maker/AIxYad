@@ -1,0 +1,406 @@
+{
+  "version": "1.0.0",
+  "agents": {
+    "orchestrator": {
+      "name": "Orchestrator",
+      "enabled": true,
+      "command": "/agent-orchestrator",
+      "role": "Team Lead",
+      "description": "Coordinates workflow and routes tasks to appropriate agents",
+      "responsibilities": [
+        "Analyze incoming tasks and determine appropriate agent assignment",
+        "Monitor overall project progress and status",
+        "Coordinate handoffs between agents",
+        "Escalate blockers and dependencies",
+        "Ensure quality gates are met before transitions"
+      ],
+      "bounds": {
+        "can_assign_tasks": true,
+        "can_modify_code": false,
+        "can_create_tasks": true,
+        "can_delete_tasks": false,
+        "can_approve_merges": false,
+        "max_concurrent_delegations": 3
+      },
+      "subtasks": [
+        "Task routing and assignment",
+        "Progress monitoring",
+        "Cross-agent coordination",
+        "Status reporting"
+      ],
+      "triggers": ["new_task", "task_blocked", "task_complete"],
+      "outputs": ["task_assignment", "status_report", "escalation"]
+    },
+    "product-owner": {
+      "name": "ProductOwner",
+      "enabled": true,
+      "command": "/agent-product-owner",
+      "role": "Strategy",
+      "description": "Prioritizes backlog and defines acceptance criteria",
+      "responsibilities": [
+        "Define and maintain product backlog priority",
+        "Write acceptance criteria using Gherkin format",
+        "Validate business value of tasks",
+        "Approve task completion against criteria",
+        "Manage stakeholder requirements"
+      ],
+      "bounds": {
+        "can_assign_tasks": false,
+        "can_modify_code": false,
+        "can_create_tasks": true,
+        "can_delete_tasks": true,
+        "can_approve_merges": true,
+        "can_reprioritize": true
+      },
+      "subtasks": [
+        "Backlog grooming",
+        "Priority assignment (MoSCoW)",
+        "Acceptance criteria definition",
+        "Value scoring"
+      ],
+      "triggers": ["backlog_review", "task_validation", "sprint_planning"],
+      "outputs": ["prioritized_backlog", "acceptance_criteria", "value_assessment"]
+    },
+    "scrum-master": {
+      "name": "ScrumMaster",
+      "enabled": true,
+      "command": "/agent-scrum-master",
+      "role": "Process",
+      "description": "Breaks down tasks and identifies parallel work opportunities",
+      "responsibilities": [
+        "Decompose epics into user stories",
+        "Apply vertical slicing to create thin slices",
+        "Identify parallel execution opportunities",
+        "Estimate effort using T-shirt sizing",
+        "Map dependencies between tasks"
+      ],
+      "bounds": {
+        "can_assign_tasks": true,
+        "can_modify_code": false,
+        "can_create_tasks": true,
+        "can_delete_tasks": false,
+        "can_split_tasks": true,
+        "can_merge_tasks": true
+      },
+      "subtasks": [
+        "Epic decomposition",
+        "Story point estimation",
+        "Dependency mapping",
+        "Sprint capacity planning"
+      ],
+      "triggers": ["epic_created", "sprint_start", "capacity_check"],
+      "outputs": ["task_breakdown", "dependency_graph", "sprint_plan"]
+    },
+    "architect": {
+      "name": "Architect",
+      "enabled": true,
+      "command": "/agent-architect",
+      "role": "Design",
+      "description": "Creates system designs and implementation plans",
+      "responsibilities": [
+        "Design system architecture following Clean Architecture",
+        "Apply SOLID principles to component design",
+        "Create C4 model diagrams (Context, Container, Component)",
+        "Select appropriate design patterns",
+        "Define API contracts and interfaces"
+      ],
+      "bounds": {
+        "can_assign_tasks": false,
+        "can_modify_code": true,
+        "can_create_tasks": true,
+        "can_approve_design": true,
+        "can_veto_implementation": true,
+        "scope": ["architecture", "interfaces", "contracts"]
+      },
+      "subtasks": [
+        "System design",
+        "Component architecture",
+        "API design",
+        "Pattern selection",
+        "Technical specification"
+      ],
+      "triggers": ["design_request", "architecture_review", "new_feature"],
+      "outputs": ["design_document", "api_spec", "component_diagram"]
+    },
+    "developer": {
+      "name": "Developer",
+      "enabled": true,
+      "command": "/agent-developer",
+      "role": "Implementation",
+      "description": "Implements code following best practices and TDD",
+      "responsibilities": [
+        "Write clean, maintainable code",
+        "Follow TDD (Red-Green-Refactor)",
+        "Create unit tests with high coverage",
+        "Apply conventional commit messages",
+        "Implement dependency injection patterns"
+      ],
+      "bounds": {
+        "can_assign_tasks": false,
+        "can_modify_code": true,
+        "can_create_tasks": false,
+        "can_commit": true,
+        "can_push": false,
+        "scope": ["source_code", "unit_tests", "configs"]
+      },
+      "subtasks": [
+        "Feature implementation",
+        "Unit test creation",
+        "Code refactoring",
+        "Bug fixing",
+        "Technical debt reduction"
+      ],
+      "triggers": ["task_assigned", "bug_reported", "refactor_request"],
+      "outputs": ["code_changes", "unit_tests", "commit"]
+    },
+    "tester": {
+      "name": "Tester",
+      "enabled": true,
+      "command": "/agent-tester",
+      "role": "Quality",
+      "description": "Ensures code quality through comprehensive testing",
+      "responsibilities": [
+        "Design test strategies following testing pyramid",
+        "Write integration and E2E tests",
+        "Perform regression testing",
+        "Validate edge cases and error handling",
+        "Report coverage metrics"
+      ],
+      "bounds": {
+        "can_assign_tasks": false,
+        "can_modify_code": true,
+        "can_create_tasks": true,
+        "can_block_release": true,
+        "scope": ["tests", "test_configs", "fixtures"]
+      },
+      "subtasks": [
+        "Test plan creation",
+        "Integration testing",
+        "E2E testing",
+        "Performance testing",
+        "Coverage analysis"
+      ],
+      "triggers": ["code_complete", "regression_request", "release_candidate"],
+      "outputs": ["test_results", "coverage_report", "bug_reports"]
+    },
+    "code-reviewer": {
+      "name": "CodeReviewer",
+      "enabled": true,
+      "command": "/agent-code-reviewer",
+      "role": "Validation",
+      "description": "Reviews code for quality, security, and standards compliance",
+      "responsibilities": [
+        "Review code for SOLID principle compliance",
+        "Identify code smells and anti-patterns",
+        "Check OWASP security guidelines",
+        "Validate coding standards adherence",
+        "Provide constructive feedback"
+      ],
+      "bounds": {
+        "can_assign_tasks": false,
+        "can_modify_code": false,
+        "can_create_tasks": true,
+        "can_approve_merges": true,
+        "can_request_changes": true,
+        "can_block_merge": true
+      },
+      "subtasks": [
+        "Code quality review",
+        "Security review",
+        "Standards compliance check",
+        "Performance review",
+        "Documentation review"
+      ],
+      "triggers": ["pull_request", "code_complete", "review_request"],
+      "outputs": ["review_comments", "approval", "change_requests"]
+    },
+    "security-auditor": {
+      "name": "SecurityAuditor",
+      "enabled": true,
+      "command": "/agent-security-auditor",
+      "role": "Security",
+      "description": "Performs security audits and vulnerability scanning",
+      "responsibilities": [
+        "Scan for OWASP Top 10 vulnerabilities",
+        "Perform STRIDE threat modeling",
+        "Audit authentication and authorization",
+        "Check for sensitive data exposure",
+        "Review dependency security"
+      ],
+      "bounds": {
+        "can_assign_tasks": false,
+        "can_modify_code": false,
+        "can_create_tasks": true,
+        "can_block_release": true,
+        "can_escalate_critical": true,
+        "severity_authority": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+      },
+      "subtasks": [
+        "Vulnerability scanning",
+        "Threat modeling",
+        "Penetration testing",
+        "Dependency audit",
+        "Security compliance check"
+      ],
+      "triggers": ["security_scan", "release_candidate", "dependency_update"],
+      "outputs": ["security_report", "vulnerability_list", "remediation_tasks"]
+    },
+    "safety-compliance": {
+      "name": "SafetyCompliance",
+      "enabled": true,
+      "command": "/safety-compliance",
+      "role": "Safety",
+      "description": "Ensures code safety compliance with Power of 10, MISRA C, CERT",
+      "responsibilities": [
+        "Enforce NASA/JPL Power of 10 rules",
+        "Check MISRA C compliance for embedded code",
+        "Validate CERT secure coding standards",
+        "Create compliance TODOs for violations",
+        "Provide best practice implementations"
+      ],
+      "bounds": {
+        "can_assign_tasks": false,
+        "can_modify_code": false,
+        "can_create_tasks": true,
+        "can_block_release": true,
+        "can_waive_rules": false,
+        "standards": ["power_of_10", "misra_c", "cert_c"]
+      },
+      "subtasks": [
+        "Power of 10 compliance check",
+        "MISRA C validation",
+        "CERT standard verification",
+        "Compliance reporting",
+        "Remediation guidance"
+      ],
+      "triggers": ["safety_scan", "code_complete", "release_candidate"],
+      "outputs": ["compliance_report", "violation_todos", "remediation_guide"]
+    },
+    "devops": {
+      "name": "DevOps",
+      "enabled": true,
+      "command": "/agent-devops",
+      "role": "Operations",
+      "description": "Manages CI/CD pipelines and deployment infrastructure",
+      "responsibilities": [
+        "Configure and maintain CI/CD pipelines",
+        "Implement deployment strategies (blue-green, canary)",
+        "Manage infrastructure as code",
+        "Monitor system health and metrics",
+        "Automate operational tasks"
+      ],
+      "bounds": {
+        "can_assign_tasks": false,
+        "can_modify_code": true,
+        "can_create_tasks": true,
+        "can_deploy": true,
+        "can_rollback": true,
+        "scope": ["ci_cd", "infrastructure", "configs", "scripts"]
+      },
+      "subtasks": [
+        "Pipeline configuration",
+        "Deployment automation",
+        "Infrastructure management",
+        "Monitoring setup",
+        "Performance optimization"
+      ],
+      "triggers": ["deploy_request", "pipeline_failure", "scale_event"],
+      "outputs": ["deployment", "pipeline_config", "monitoring_dashboard"]
+    },
+    "documentarian": {
+      "name": "Documentarian",
+      "enabled": true,
+      "command": "/agent-documentarian",
+      "role": "Documentation",
+      "description": "Creates and maintains project documentation",
+      "responsibilities": [
+        "Write technical documentation following Diátaxis",
+        "Create Architecture Decision Records (ADRs)",
+        "Maintain API documentation",
+        "Update changelogs (Keep a Changelog)",
+        "Generate code documentation"
+      ],
+      "bounds": {
+        "can_assign_tasks": false,
+        "can_modify_code": false,
+        "can_create_tasks": false,
+        "can_modify_docs": true,
+        "scope": ["docs", "readme", "api_docs", "changelogs"]
+      },
+      "subtasks": [
+        "API documentation",
+        "User guides",
+        "Architecture documentation",
+        "Changelog maintenance",
+        "Code comments"
+      ],
+      "triggers": ["release", "api_change", "feature_complete"],
+      "outputs": ["documentation", "adr", "changelog_entry"]
+    },
+    "researcher": {
+      "name": "Researcher",
+      "enabled": true,
+      "command": "/agent-researcher",
+      "role": "Investigation",
+      "description": "Evaluates options and finds optimal solutions",
+      "responsibilities": [
+        "Research technology options and alternatives",
+        "Create decision matrices for evaluation",
+        "Perform build vs buy analysis",
+        "Benchmark performance of solutions",
+        "Document findings with evidence"
+      ],
+      "bounds": {
+        "can_assign_tasks": false,
+        "can_modify_code": false,
+        "can_create_tasks": true,
+        "can_recommend": true,
+        "can_veto": false
+      },
+      "subtasks": [
+        "Technology research",
+        "Competitive analysis",
+        "Performance benchmarking",
+        "Cost analysis",
+        "Risk assessment"
+      ],
+      "triggers": ["research_request", "technology_decision", "optimization_needed"],
+      "outputs": ["research_report", "decision_matrix", "recommendation"]
+    }
+  },
+  "workflows": {
+    "default": {
+      "name": "Standard Development",
+      "steps": ["Developer", "Tester", "CodeReviewer"],
+      "parallel_allowed": false
+    },
+    "feature": {
+      "name": "Feature Development",
+      "steps": ["ProductOwner", "ScrumMaster", "Architect", "Developer", "Tester", "CodeReviewer", "Documentarian"],
+      "parallel_allowed": true
+    },
+    "bugfix": {
+      "name": "Bug Fix",
+      "steps": ["Developer", "Tester", "CodeReviewer"],
+      "parallel_allowed": false
+    },
+    "security": {
+      "name": "Security Review",
+      "steps": ["SecurityAuditor", "Developer", "CodeReviewer"],
+      "parallel_allowed": false
+    },
+    "safety_critical": {
+      "name": "Safety Critical",
+      "steps": ["Architect", "Developer", "SafetyCompliance", "Tester", "CodeReviewer", "SecurityAuditor"],
+      "parallel_allowed": false
+    }
+  },
+  "global_bounds": {
+    "max_parallel_agents": 3,
+    "require_review_for_merge": true,
+    "require_tests_for_merge": true,
+    "require_security_scan": false,
+    "require_safety_check": false,
+    "auto_assign_enabled": true
+  }
+}

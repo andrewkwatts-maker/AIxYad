@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "automatica"
+version = "0.2.0"
+description = "Multi-agent AI software development framework — autonomous sprint runner, agent protocol, headless server"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Andrew Keith Watts", email = "AndrewKWatts@Gmail.com" }]
+keywords = ["ai", "agents", "autonomous", "sprint", "scrum", "llm", "devops"]
+dependencies = []   # stdlib only; all AI/server extras are optional
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+server = ["fastapi>=0.110", "uvicorn[standard]>=0.28", "python-jose[cryptography]", "cryptography"]
+vision = ["pillow>=10.0"]
+full   = ["automatica[server,vision]"]
+
+[project.scripts]
+automatica = "run_autonomous:main"
+
+[tool.setuptools]
+py-modules = [
+    "run_autonomous",
+    "sprint_runner",
+    "agent_protocol",
+    "agent_executor",
+    "automatica_db",
+    "ai_adapters",
+    "db_actions",
+    "validation",
+    "view_actions",
+    "vision_actions",
+    "project_scanner",
+    "ollama_utils",
+    "ui_automation",
+    "api_server",
+]
+
+[tool.setuptools.packages.find]
+include = ["adapters", "adapters.*"]
+
+[tool.setuptools.package-data]
+"*" = [
+    "config/*.json",
+    "agents/*.md",
+    "standards/*.md",
+]
+"adapters" = ["*.py", "README.md"]

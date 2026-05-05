@@ -990,6 +990,33 @@ class APIServer:
             except Exception as exc:
                 raise HTTPException(status_code=500, detail=str(exc))
 
+        # ── GET /api/providers/discover ──────────────────────────────────────
+        # Read-only probe: scans PATH for known CLIs and pings known local
+        # HTTP endpoints (Ollama, etc.) and returns suggested rows the UI
+        # can preview before persisting. Persisting goes through the existing
+        # authenticated POST /api/providers endpoint, so this endpoint is
+        # safe to expose without state-changing auth — it modifies nothing.
+        @app.get('/api/providers/discover')
+        def discover_providers():
+            """Auto-detect available AI providers on the host (read-only)."""
+            try:
+                from adapters.discovery import discover_all
+                discovered = discover_all()
+                # Cross-reference with already-registered providers so the UI
+                # can mark which discoveries are new vs. already in the DB.
+                conn = _get_global_conn()
+                existing = {
+                    row['name']
+                    for row in conn.execute(
+                        "SELECT name FROM providers"
+                    ).fetchall()
+                }
+                for row in discovered:
+                    row['already_registered'] = row['name'] in existing
+                return {"discovered": discovered, "registered_names": sorted(existing)}
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=str(exc))
+
         # ── B-01: GET /api/agents ─────────────────────────────────────────────
         @app.get('/api/agents')
         def list_agents():

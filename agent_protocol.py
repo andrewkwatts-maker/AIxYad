@@ -1075,7 +1075,7 @@ def main():
     parser.add_argument('--project-dir', required=True, help='Project directory')
     parser.add_argument('--task-file', required=True, help='Task description markdown file')
     parser.add_argument('--step', type=int, default=8, help='Pipeline step ID')
-    parser.add_argument('--config', default='pipeline-config.json', help='Pipeline config file')
+    parser.add_argument('--config', default='config/pipeline-config.json', help='Pipeline config file')
     parser.add_argument('--max-iterations', type=int, default=50, help='Max iterations per task')
     parser.add_argument('--log-dir', help='Optional log directory')
     args = parser.parse_args()

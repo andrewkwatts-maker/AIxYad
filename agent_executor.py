@@ -462,62 +462,101 @@ class AgentExecutor:
             ),
         }
 
-    # Subdirectories that ARE allowed for source files. When src/ exists,
-    # source-extension files at the project root are rejected (the model
-    # routinely creates pong.py + paddle.py + ball.py at root despite the
-    # standards saying src/, because Phi4 doesn't reliably follow
-    # multi-paragraph prompt rules — code-level enforcement is the only
-    # thing it actually responds to).
-    SOURCE_DIRS = ("src", "lib", "include", "app", "core")
+    # Source-extension files belong under one of these directories.
+    # Independent of whether the directory currently exists — the rule is
+    # always-on, so the agent can't sneak paddle.py to root before src/
+    # exists and then dodge the ban.
+    SOURCE_DIRS = ("src", "lib", "include", "app", "core", "tests", "test",
+                    "examples", "scripts")
     SOURCE_EXTS = (".py", ".pyi", ".cpp", ".hpp", ".h", ".cc", ".c",
                     ".rs", ".ts", ".tsx", ".js", ".jsx", ".go", ".java",
                     ".cs", ".kt")
-    BANNED_ROOT_DIRS = (
-        # Sibling folders the model creates instead of using src/. Ban these
-        # at depth 1 (project_dir/<name>/) so the model has to put new code
-        # in src/ instead. Project-name banned dynamically below.
+    # Files with non-source extensions that ARE allowed at the project root.
+    # Anything else at root must be a build/config/docs file, not source.
+    ROOT_ALLOWED_BASENAMES = frozenset({
+        "readme.md", "license", "license.md", "license.txt",
+        "claude.md", "standards.md", "project_standards.md",
+        "requirements.txt", "requirements-dev.txt", "requirements-test.txt",
+        "pyproject.toml", "setup.py", "setup.cfg", "tox.ini", "pytest.ini",
+        ".gitignore", ".gitattributes", ".editorconfig", ".env.example",
+        "build.bat", "build.sh", "makefile", "cmakelists.txt",
+        "package.json", "package-lock.json", "tsconfig.json",
+        "cargo.toml", "cargo.lock",
+        "go.mod", "go.sum",
+        "dockerfile", ".dockerignore",
+        "agents.md",
+    })
+    # Sibling subdirectories at the project root that the agent shouldn't
+    # create (it should use src/<name>/ or merge into src/<name>.py instead).
+    # Always-on regardless of whether src/ exists.
+    BANNED_ROOT_DIRS = frozenset({
         "paddle", "paddle_ai", "ball", "game", "gameplay", "engine",
-        "graphics", "ai", "utils", "core_lib", "scoring", "scoring_system",
-    )
+        "graphics", "ai", "utils", "helpers", "common", "core_lib",
+        "scoring", "scoring_system", "modules", "module",
+    })
 
     def _layout_violation(self, rel_path: str) -> Optional[str]:
         """Return a human-readable rejection reason if rel_path violates
-        the inferred project layout, else None. Layout is inferred from
-        what's already on disk: once src/ exists, source files at root
-        are banned; once src/ exists, sibling subfolders for the same
-        concept are banned."""
-        # Normalise to forward slashes for the checks below
+        the project layout rules, else None.
+
+        Rule set is RULE-BASED, not state-based — i.e. the bans don't
+        depend on whether src/ already exists. Otherwise the model can
+        race the check by writing to root before src/ is created. Always-on:
+
+          * Source files (.py / .cpp / .ts / etc.) at the project root
+            (depth 1) — banned. Must live under src/, tests/, etc.
+          * Project name as a subdirectory at root (Pong/main.py for the
+            Pong project) — banned. Use src/.
+          * Project-name + source extension (pong.py for Pong) — banned.
+            Use src/main.py.
+          * Banned sibling subfolders (paddle/, ai/, utils/, …) at root —
+            banned. Use src/<name>/.
+          * Non-source files at root must be in ROOT_ALLOWED_BASENAMES.
+            Catches the agent dropping random .json / .yaml / .ini at
+            root instead of in config/.
+        """
         norm = rel_path.replace("\\", "/").lstrip("./")
         suffix = Path(norm).suffix.lower()
         parts = norm.split("/")
-
-        # Project-name self-banned (Pong project must not have pong.py at root)
         proj_lower = self.project_dir.name.lower()
-        if len(parts) == 1 and norm.lower() == f"{proj_lower}.py":
+
+        # Project-name as filename at root: pong.py for Pong project.
+        if len(parts) == 1 and Path(norm).stem.lower() == proj_lower:
             return (f"Layout rule: '{norm}' duplicates the project name as a "
                     f"root-level entry point. Use src/main.py instead.")
 
-        # Source file at root, AND src/ already exists ⇒ banned
+        # Source file at root (any source extension at depth 1) — banned.
         if len(parts) == 1 and suffix in self.SOURCE_EXTS:
-            if (self.project_dir / "src").is_dir():
-                return (f"Layout rule: source files belong under src/, not at "
-                        f"the project root. Move '{norm}' to src/{norm} (or "
-                        f"src/<subdir>/{norm}).")
+            return (f"Layout rule: source files belong under src/, tests/, "
+                    f"or another source directory — not at the project root. "
+                    f"Move '{norm}' to src/{norm} (or src/<subdir>/{norm} or "
+                    f"tests/{norm} if it's a test).")
 
-        # Banned sibling subfolders — if the file is under one of these,
-        # AND src/ exists (so there's a canonical place to put it), reject.
-        if len(parts) >= 2 and parts[0].lower() in self.BANNED_ROOT_DIRS:
-            if (self.project_dir / "src").is_dir():
-                return (f"Layout rule: '{parts[0]}/' is a banned sibling of "
-                        f"src/. Put the file under src/{parts[0]}/ or merge "
-                        f"the logic into the existing src/{parts[0]}.py.")
-
-        # Project-name as a subdirectory at root (Pong/main.py) — banned;
-        # use src/main.py.
+        # Project-name as subdirectory: Pong/main.py for Pong project.
         if len(parts) >= 2 and parts[0].lower() == proj_lower:
             return (f"Layout rule: '{parts[0]}/' (a subfolder named after the "
-                    f"project) is banned. Put '{Path(norm).name}' under src/ "
-                    f"instead.")
+                    f"project) is banned. Put '{Path(norm).name}' under "
+                    f"src/ instead.")
+
+        # Banned sibling subfolders at root — paddle/, ai/, utils/, etc.
+        if len(parts) >= 2 and parts[0].lower() in self.BANNED_ROOT_DIRS:
+            return (f"Layout rule: '{parts[0]}/' at the project root is "
+                    f"banned (it should be under src/). Put '{Path(norm).name}' "
+                    f"at src/{parts[0]}/{Path(norm).name}, or merge the "
+                    f"logic into the existing src/{parts[0]}.py.")
+
+        # Catch-all for non-source files at root that aren't allowed.
+        # Lets src/, tests/, config/, docs/ subdirectories be anything,
+        # but root must be a recognised build/config/docs file.
+        if len(parts) == 1 and norm.lower() not in self.ROOT_ALLOWED_BASENAMES:
+            # Allow common simple .md / .txt at root (auto-generated docs etc).
+            if suffix in (".md", ".txt", ".rst"):
+                return None
+            return (f"Layout rule: '{norm}' isn't a recognised root-level "
+                    f"file. Standard root-level files are README.md, "
+                    f"STANDARDS.md, requirements.txt, pyproject.toml, "
+                    f"build.bat, .gitignore, etc. Source goes under src/, "
+                    f"config goes under config/, docs under docs/.")
 
         return None
 

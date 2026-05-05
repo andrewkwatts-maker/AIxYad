@@ -114,6 +114,29 @@ NEVER reach into .git, .automatica, venv, .vscode, node_modules, __pycache__,
 or any test cache directory — every path you read or write must be a real
 project source path, and the executor will reject system-directory paths.
 
+ANTI-DUPLICATE RULE (HARD):
+If the task title or description starts with REFACTOR, EXTRACT, RENAME,
+SPLIT, MOVE, RESTRUCTURE, INLINE, MERGE, OPTIMISE, POLISH, ADD DOCSTRINGS,
+or otherwise targets EXISTING code, you MUST modify in place:
+  - Use edit_file (or write_file with overwrite:true on the SAME path)
+  - Use discard_file + write_file ONLY when the task names a new path
+    explicitly (e.g. "create src/ai/paddle.py with ...")
+  - Multiple edit_file calls in one batch are encouraged (see batch shape)
+
+DO NOT:
+  - Create paddle/movement.py when src/paddle.py already exists
+  - Create paddle_ai/foo.py because the original lived at src/paddle.py
+  - Make a sibling file in a new folder "to keep the original safe"
+  - Invent files like PaddleTracking.py or ScoringSystem.py if the task
+    only said "refactor scoring logic"
+  - Treat "extract X" as "create new file" — extract means split logic
+    inside the SAME file (separate class) unless a new path is named
+
+If you produce a path that doesn't appear in the EXISTING PROJECT FILES
+list AND isn't named by the task description, the executor will warn you.
+Treat that warning as a near-failure — the next action should fix the
+duplicate (discard_file the new one, edit the existing).
+
 CRITICAL WORKFLOW — follow exactly:
 1. Read the task description carefully.
 2. EXPLORE FIRST: call list_files or read_file to understand the EXISTING codebase before making any changes.
@@ -358,14 +381,29 @@ class BaseAdapter(ABC):
         """Convert a protocol request dict into a plain-text prompt."""
         parts: List[str] = []
 
+        # ── Project standards (CLAUDE.md or equivalent) ───────────────────
+        # The user-defined "what good looks like in this project" doc.
+        # Surfaced before the task block so SOLID rules, project layout,
+        # build/test gates, and language-specific requirements (KivyMD for
+        # Python UI, build.bat, YAML configs, ≥90% coverage) anchor every
+        # agent action.
+        std = request.get("project_standards")
+        if std and std.get("text"):
+            parts.append(f"== PROJECT STANDARDS (from {std.get('source','CLAUDE.md')}) ==")
+            parts.append(std["text"].rstrip())
+            parts.append(("Conform every change to these standards. If the "
+                          "task contradicts a standard, prefer the standard "
+                          "and call need_help."))
+            parts.append("")
+
         # ── Existing project files ────────────────────────────────────────
-        # Surfaced FIRST so the agent reckons with reality before reading the
-        # task. Without this, agent_protocol set request["wiki_summary"] but
-        # the prompt builder ignored it — every task prompted the model with
-        # zero awareness of the codebase, and small models hallucinated
-        # paths / created duplicates (game.py + src/game.py + game/game.py +
-        # score_manager.py + game/scoring_system.py … all "new", none of
-        # them edits of what existed).
+        # Surfaced FIRST (well — second, after standards) so the agent reckons
+        # with reality before reading the task. Without this, agent_protocol
+        # set request["wiki_summary"] but the prompt builder ignored it —
+        # every task prompted the model with zero awareness of the codebase,
+        # and small models hallucinated paths / created duplicates (game.py +
+        # src/game.py + game/game.py + score_manager.py + game/scoring_system.py
+        # … all "new", none of them edits of what existed).
         wiki = request.get("wiki_summary") or []
         if wiki:
             parts.append("== EXISTING PROJECT FILES ==")

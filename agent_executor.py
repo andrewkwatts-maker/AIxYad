@@ -504,9 +504,38 @@ class AgentExecutor:
                 self._summary_indexer.enqueue(full_path)
             except Exception:
                 pass
+
+        # Anti-duplicate warning. If a file with the same basename already
+        # exists somewhere else in the project, the agent is probably
+        # creating a duplicate (paddle.py + paddle_ai/movement.py + …).
+        # Phi4 reliably triggers this on refactor tasks. Surface the
+        # warning in the message so the agent can self-correct on the
+        # next iteration.
+        warning = ""
+        try:
+            basename = full_path.name
+            for existing in self.project_dir.rglob(basename):
+                if existing.resolve() == full_path:
+                    continue
+                # Skip system/state dirs (matches HARD_FORBIDDEN_PATH_PARTS).
+                if any(p in self.HARD_FORBIDDEN_PATH_PARTS
+                       for p in existing.relative_to(self.project_dir).parts):
+                    continue
+                rel_existing = existing.relative_to(self.project_dir)
+                warning = (
+                    f"\nWARNING: a file named {basename!r} already exists at "
+                    f"{rel_existing} — this is likely a DUPLICATE. If your "
+                    f"task is a refactor/extract/rename, you should have "
+                    f"edit_file'd the existing file instead. Consider "
+                    f"discard_file on this new write, or merging back."
+                )
+                break
+        except Exception:
+            pass
+
         return {
             "success": True,
-            "message": f"ACTION: write_file {rel_path} — SUCCESS ({line_count} lines written)",
+            "message": f"ACTION: write_file {rel_path} — SUCCESS ({line_count} lines written){warning}",
         }
 
     def _do_edit_file(self, params: dict) -> dict:

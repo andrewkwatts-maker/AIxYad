@@ -497,7 +497,12 @@ def summarise_project(project_dir: Path, *, endpoint: str, model: str,
                        force: bool = False) -> bool:
     """Refresh the README.md auto-section. Only the block between
     SENTINEL_BEGIN/SENTINEL_END is touched — everything else in the README
-    is preserved exactly."""
+    is preserved exactly.
+
+    Falls back to root-level Python file docstrings when the project has no
+    subfolders with `_folder_summary.md`. This matters for flat projects
+    (Pong is one) where Phi4 keeps editing root files and the folder
+    cascade never fires."""
     readme = project_dir / "README.md"
     folders: list[tuple[str, str]] = []
     for child in sorted(project_dir.iterdir()):
@@ -507,6 +512,27 @@ def summarise_project(project_dir: Path, *, endpoint: str, model: str,
         if f.is_file():
             folders.append((child.name + "/",
                             f.read_text(encoding="utf-8", errors="replace")[:500]))
+
+    # Flat-project fallback: aggregate root-level Python file blurbs into
+    # virtual "folder" entries so the project README still gets a refresh.
+    if not folders:
+        root_blurbs: list[tuple[str, str]] = []
+        for child in sorted(project_dir.iterdir()):
+            if not child.is_file():
+                continue
+            if child.suffix.lower() not in {".py", ".pyi"}:
+                continue
+            if any(p in str(child).replace("\\", "/") for p in SKIP_PATTERNS):
+                continue
+            blurb = _python_summary_blurb(child)
+            if blurb:
+                root_blurbs.append((child.name, blurb[:400]))
+        if root_blurbs:
+            folders = [("(root)", "\n".join(
+                f"- {name}: {b.splitlines()[0] if b else ''}"
+                for name, b in root_blurbs[:25]
+            ))]
+
     if not folders:
         return False
 
@@ -618,9 +644,12 @@ class SummaryIndexer:
                 if cur.parent == cur:
                     break
                 cur = cur.parent
-        # Project summary if any folder changed.
+        # Project summary fires when ANY file or folder changed (was previously
+        # gated on folders_done>0, which never fired for flat projects where
+        # all edits happen at the project root). The summarise_project flat-
+        # project fallback aggregates root-level docstrings directly.
         project_done = 0
-        if folders_done > 0 or force:
+        if files_done > 0 or folders_done > 0 or force:
             if summarise_project(self.project_dir, endpoint=self.endpoint,
                                   model=self.model, force=force):
                 project_done = 1

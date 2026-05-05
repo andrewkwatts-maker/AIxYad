@@ -355,6 +355,30 @@ class AgentProtocol:
             except Exception:
                 pass
 
+        # Pull CLAUDE.md (or PROJECT_STANDARDS.md) at the project root if it
+        # exists. This is the user's canonical "what good looks like in this
+        # project" — SOLID rules, KivyMD requirement for Python UI, build.bat
+        # + ≥90% coverage, YAML configs, etc. Surfaced in the prompt as
+        # "== PROJECT STANDARDS ==" so every agent action is anchored to it.
+        try:
+            for _candidate in ("CLAUDE.md", "PROJECT_STANDARDS.md", "STANDARDS.md"):
+                _std_path = self.project_dir / _candidate
+                if _std_path.is_file():
+                    _std_text = _std_path.read_text(encoding="utf-8",
+                                                      errors="replace")
+                    # Trim aggressively — even with a 4096-token context the
+                    # standards block can't dominate. Keep the first ~3K chars
+                    # which is enough for the principles + structure.
+                    if len(_std_text) > 3000:
+                        _std_text = _std_text[:3000] + "\n…[standards truncated]…"
+                    request['project_standards'] = {
+                        'source': _candidate,
+                        'text': _std_text,
+                    }
+                    break
+        except Exception:
+            pass  # standards block is best-effort
+
         # Add wiki summary: top 25 files by recency so agents know the codebase layout
         try:
             _files = list_project_files(self.project_dir)
@@ -372,12 +396,37 @@ class AgentProtocol:
         # written by the take_note action to .automatica/notes/<task_id>.md
         # and read here on every iteration so the agent doesn't lose the
         # plot when bouncing between iterations or sprints on the same task.
+        # First iteration of a task gets a SEED note so the agent sees the
+        # pattern and reaches for take_note instead of re-deriving its plan
+        # from scratch every iteration. The seed includes the task's title +
+        # acceptance criteria so the persistent context anchors there.
         try:
             _tid = task.get('display_id') or ''
             if _tid:
                 _safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(_tid))[:80]
-                _notes_path = (self.project_dir / ".automatica" / "notes"
-                               / f"{_safe_id}.md")
+                _notes_dir = self.project_dir / ".automatica" / "notes"
+                _notes_path = _notes_dir / f"{_safe_id}.md"
+                if not _notes_path.is_file():
+                    # Seed on first iteration so the agent has a pattern to
+                    # imitate and a place to anchor its plan.
+                    try:
+                        _notes_dir.mkdir(parents=True, exist_ok=True)
+                        _crit = task.get('acceptance_criteria') or ''
+                        if isinstance(_crit, list):
+                            _crit = "\n".join(f"  - {c}" for c in _crit)
+                        seed = (
+                            f"# Notes for {_safe_id}\n\n"
+                            f"## Task\n{task.get('title','')}\n\n"
+                            f"## Acceptance criteria\n{_crit or '(none specified)'}\n\n"
+                            f"## Plan\n"
+                            f"_Use take_note(text=\"…\") to write what you've "
+                            f"done, what's left, and any decisions you'll "
+                            f"forget. This pad is auto-injected into every "
+                            f"iteration's prompt._\n"
+                        )
+                        _notes_path.write_text(seed, encoding="utf-8")
+                    except Exception:
+                        pass
                 if _notes_path.is_file():
                     _txt = _notes_path.read_text(encoding="utf-8", errors="replace")
                     # Cap size so a runaway notepad can't dominate the prompt

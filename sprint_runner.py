@@ -2389,10 +2389,32 @@ class SprintRunner:
             f"- {t['display_id']}: {t['title']}" for t in recent_done
         ) or "(none)"
 
+        # Pull CLAUDE.md / PROJECT_STANDARDS.md if present — replenish should
+        # propose tasks that conform to the project's standards (KivyMD for
+        # Python UI, build.bat, ≥90% coverage, YAML configs, etc.).
+        standards_text = ""
+        for _candidate in ("CLAUDE.md", "PROJECT_STANDARDS.md", "STANDARDS.md"):
+            _sp = self.project_dir / _candidate
+            if _sp.is_file():
+                try:
+                    standards_text = _sp.read_text(encoding="utf-8",
+                                                     errors="replace")[:2500]
+                except Exception:
+                    standards_text = ""
+                break
+        standards_block = (f"\nProject standards (from {_candidate}):\n"
+                            f"{standards_text}\n\n"
+                            f"Replenish tasks must align with these standards. "
+                            f"E.g. if standards mandate KivyMD, do not propose "
+                            f"raw tkinter work. If they require build.bat + "
+                            f"≥90% coverage, propose a coverage-gate task before "
+                            f"new features.\n\n") if standards_text else ""
+
         prompt = (
             "You are a senior software engineer reviewing an autonomous "
             "project after its initial backlog has been completed.\n\n"
             f"Project goal: {goal or '(no goal set)'}\n\n"
+            f"{standards_block}"
             f"Recently completed tasks:\n{done_summary}\n\n"
             f"Project file census ({len(files)} files; first 30):\n  "
             + "\n  ".join(sample_paths) + "\n\n"
@@ -2486,7 +2508,49 @@ class SprintRunner:
                     return did
 
         _VALID_COMPLEXITY = (1, 2, 3, 5, 8, 13, 21, 34, 55, 89)
+        # Build the set of existing project paths once. Tasks proposing work
+        # against paths that don't exist will get rejected — Phi4's review
+        # output reliably invents paths like "PaddleTracking.py" or
+        # "pong/utils/collision_detection.py" that confuse the executor.
+        # Strict normalisation: forward slashes, lowercase, strip leading "./"
+        existing_path_set: set[str] = set()
+        for f in (files or []):
+            p = (f.get("path") or "").replace("\\", "/").lstrip("./").lower()
+            if p:
+                existing_path_set.add(p)
+                # Also stash the basename so a "src/foo.py" task doesn't get
+                # rejected when the file is at "subdir/foo.py".
+                existing_path_set.add(p.rsplit("/", 1)[-1])
+
+        # A path-token regex shared with the WF-8 path extractor.
+        import re as _re
+        _PATH_TOKEN = _re.compile(r"[\w./\\-]+\.[A-Za-z0-9]{1,6}")
+
+        def _task_paths_resolve(title: str, desc: str) -> tuple[bool, list[str]]:
+            """Pick path-shaped tokens out of a proposed task and check that
+            each one exists in the project. Returns (all_resolved, missing).
+            Vacuously OK if the task names no paths."""
+            text = f"{title}\n{desc}"
+            tokens = set(_PATH_TOKEN.findall(text))
+            missing_paths: list[str] = []
+            for tok in tokens:
+                norm = tok.replace("\\", "/").lstrip("./").lower()
+                # Strip surrounding markdown punctuation
+                norm = norm.strip("`'\"(),:;")
+                if not norm:
+                    continue
+                # Skip extension-only / very short noise
+                if len(norm) < 4 or norm in ("e.g.", "i.e.", "etc.", "py", "md"):
+                    continue
+                if norm in existing_path_set:
+                    continue
+                if norm.rsplit("/", 1)[-1] in existing_path_set:
+                    continue
+                missing_paths.append(tok)
+            return (len(missing_paths) == 0, missing_paths)
+
         inserted = 0
+        rejected = 0
         for task in tasks_data[:10]:
             if not isinstance(task, dict) or not task.get("title"):
                 continue
@@ -2495,24 +2559,34 @@ class SprintRunner:
             except (TypeError, ValueError):
                 raw_complexity = 3
             complexity = min(_VALID_COMPLEXITY, key=lambda v: abs(v - raw_complexity))
-            display_id = _next_display_id()
-            # Phi4 sometimes returns description as a JSON list of step strings
-            # rather than a single string. str([...]) gives the Python list
-            # literal which the agent prompt then renders as
-            # "['1. ...', '2. ...']" — confusing the agent. Normalise to a
-            # newline-separated string.
+
+            # Normalise description (list-of-steps vs string).
             _desc = task.get("description", "")
             if isinstance(_desc, list):
                 _desc = "\n".join(str(s) for s in _desc)
             else:
                 _desc = str(_desc)
+            _title = str(task.get("title", "Untitled"))[:200]
+
+            # Validate that every path the task references actually exists in
+            # the file census we showed the model. Tasks proposing work on
+            # invented paths get rejected (and logged) so the agent isn't
+            # told to refactor PaddleTracking.py if no such file exists.
+            ok, missing = _task_paths_resolve(_title, _desc)
+            if not ok:
+                rejected += 1
+                _log(f"[REPLENISH] Rejected (invented paths {missing[:3]}): "
+                     f"{_title[:60]}")
+                continue
+
+            display_id = _next_display_id()
             try:
                 conn.execute(
                     "INSERT INTO tasks (display_id, title, priority, complexity, "
                     "description, status) VALUES (?,?,?,?,?,?)",
                     (
                         display_id,
-                        str(task.get("title", "Untitled"))[:200],
+                        _title,
                         str(task.get("priority", "MEDIUM")).upper(),
                         complexity,
                         _desc,
@@ -2520,12 +2594,13 @@ class SprintRunner:
                     ),
                 )
                 inserted += 1
-                _log(f"[REPLENISH] Added: {display_id} — {str(task.get('title',''))[:60]}")
+                _log(f"[REPLENISH] Added: {display_id} — {_title[:60]}")
             except Exception as exc:
                 _log(f"[REPLENISH] Failed to insert task: {exc}")
 
         conn.commit()
-        _log(f"[REPLENISH] Backlog refilled with {inserted} review-driven task(s)")
+        _log(f"[REPLENISH] Backlog refilled with {inserted} review-driven "
+             f"task(s){f', rejected {rejected} with invented paths' if rejected else ''}")
         return inserted
 
     def _execute_review_phase(self, step: dict):

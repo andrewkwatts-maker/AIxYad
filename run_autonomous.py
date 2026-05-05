@@ -675,16 +675,19 @@ def main():
         counts = load_backlog_counts(project_dir)
         available = counts["backlog"] + counts["sprint_planned"] + counts["in_progress"] + counts.get("blocked", 0)
         if available == 0:
-            # Sprint 1 with a project_goal: run anyway so the sprint runner can generate tasks
-            if sprint_num == 1 and counts.get("has_goal"):
+            total_tasks = counts.get("total", 0) or 0
+            # Fresh project (no tasks ever) on sprint #1 with a goal:
+            # let the sprint runner do its first-pass goal->tasks generation.
+            if sprint_num == 1 and counts.get("has_goal") and total_tasks == 0:
                 write_obs(f"  Backlog empty — sprint runner will auto-generate tasks from project goal")
             elif counts.get("has_goal") and not getattr(args, "no_replenish", False):
                 # Continuous-loop replenishment: instead of exiting on empty
-                # mid-run, ask the LLM to review the project and propose a
-                # fresh batch of follow-on tasks (tests, refactors, perf,
-                # polish). Lets `--max-minutes 720` actually mean 12 hours of
-                # progress instead of "12 hours OR until the first 6 tasks
-                # finish, whichever comes first".
+                # mid-run (or running a no-op sprint when total>0), ask the
+                # LLM to review the project and propose a fresh batch of
+                # follow-on tasks (tests, refactors, perf, polish). Lets
+                # `--max-minutes 720` actually mean 12 hours of progress
+                # instead of "12 hours OR until the first 6 tasks finish,
+                # whichever comes first".
                 added = _replenish_via_review(project_dir, args.provider, write_obs)
                 if added > 0:
                     write_obs(f"  Backlog replenished with {added} review-driven tasks; continuing")

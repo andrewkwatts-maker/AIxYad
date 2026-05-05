@@ -2246,20 +2246,27 @@ class SprintRunner:
                 _VALID_COMPLEXITY = (1, 2, 3, 5, 8, 13, 21, 34, 55, 89)
                 raw_complexity = int(task.get("complexity", 3))
                 complexity = min(_VALID_COMPLEXITY, key=lambda v: abs(v - raw_complexity))
+                # Same list-vs-string normalisation as replenish_backlog
+                # (Phi4/llama sometimes returns description as a JSON list).
+                _desc = task.get("description", "")
+                if isinstance(_desc, list):
+                    _desc = "\n".join(str(s) for s in _desc)
+                else:
+                    _desc = str(_desc)
                 conn.execute(
                     "INSERT INTO tasks (display_id, title, priority, complexity, description, status) "
                     "VALUES (?,?,?,?,?,?)",
                     (
                         display_id,
-                        task.get("title", "Untitled")[:200],
-                        task.get("priority", "MEDIUM").upper(),
+                        str(task.get("title", "Untitled"))[:200],
+                        str(task.get("priority", "MEDIUM")).upper(),
                         complexity,
-                        task.get("description", ""),
+                        _desc,
                         "backlog",
                     )
                 )
                 inserted += 1
-                _log(f"[BACKLOG] Generated: {display_id} — {task.get('title', '')[:60]}")
+                _log(f"[BACKLOG] Generated: {display_id} — {str(task.get('title', ''))[:60]}")
             except Exception as exc:
                 _log(f"[BACKLOG] Failed to insert task {i}: {exc}")
 
@@ -2489,6 +2496,16 @@ class SprintRunner:
                 raw_complexity = 3
             complexity = min(_VALID_COMPLEXITY, key=lambda v: abs(v - raw_complexity))
             display_id = _next_display_id()
+            # Phi4 sometimes returns description as a JSON list of step strings
+            # rather than a single string. str([...]) gives the Python list
+            # literal which the agent prompt then renders as
+            # "['1. ...', '2. ...']" — confusing the agent. Normalise to a
+            # newline-separated string.
+            _desc = task.get("description", "")
+            if isinstance(_desc, list):
+                _desc = "\n".join(str(s) for s in _desc)
+            else:
+                _desc = str(_desc)
             try:
                 conn.execute(
                     "INSERT INTO tasks (display_id, title, priority, complexity, "
@@ -2498,7 +2515,7 @@ class SprintRunner:
                         str(task.get("title", "Untitled"))[:200],
                         str(task.get("priority", "MEDIUM")).upper(),
                         complexity,
-                        str(task.get("description", "")),
+                        _desc,
                         "backlog",
                     ),
                 )

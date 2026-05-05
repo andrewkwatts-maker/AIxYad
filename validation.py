@@ -124,6 +124,9 @@ ACTION_SCHEMA = {
     'query_symbols':    {'required': [], 'optional': ['name', 'symbol_type', 'file_glob']},
     'query_files':      {'required': [], 'optional': ['extension', 'path_contains']},
     'query_file_section': {'required': ['file_path'], 'optional': ['line_start', 'line_end', 'section_name']},
+    # In-source summary index (summary_indexer.py)
+    'get_summary':      {'required': ['path'], 'optional': []},
+    'find_relevant_files': {'required': ['query'], 'optional': ['top_k']},
 
     # GUID sections
     'create_section':   {'required': ['description', 'section_type'], 'optional': ['file_path', 'line_start', 'content', 'persistent_id']},

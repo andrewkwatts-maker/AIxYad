@@ -244,6 +244,14 @@ class AgentExecutor:
         self._session_id = ''
         self._vision_handler = _VisionActionHandler() if _VISION_AVAILABLE else None
         self._view_handler = None  # set via set_view_handler()
+        # Set by AgentProtocol after construction. Files touched by write/edit
+        # land in this queue and the SprintRunner drains it at sprint end —
+        # change-driven docstring/folder/README summary refresh.
+        self._summary_indexer = None  # type: ignore[assignment]
+
+    def set_summary_indexer(self, indexer) -> None:
+        """Attach a SummaryIndexer so file-mutating actions auto-enqueue."""
+        self._summary_indexer = indexer
 
     def set_db_handler(self, handler, actor: str = '', session_id: str = ''):
         """Attach a DbActionHandler for DB action routing and action logging."""
@@ -475,6 +483,13 @@ class AgentExecutor:
             return {"success": False, "message": f"ACTION: write_file {rel_path} — ERROR: {exc}"}
 
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+        # Enqueue for change-driven summary refresh — drained by SprintRunner
+        # at sprint end. No-op if no indexer is attached.
+        if self._summary_indexer is not None:
+            try:
+                self._summary_indexer.enqueue(full_path)
+            except Exception:
+                pass
         return {
             "success": True,
             "message": f"ACTION: write_file {rel_path} — SUCCESS ({line_count} lines written)",
@@ -564,6 +579,13 @@ class AgentExecutor:
                 from automatica_db import record_file_read
                 record_file_read(self._db_handler.pdb, rel_path,
                                  self._session_id, project_dir=self.project_dir)
+            except Exception:
+                pass
+
+        # Enqueue for change-driven summary refresh.
+        if self._summary_indexer is not None:
+            try:
+                self._summary_indexer.enqueue(full_path)
             except Exception:
                 pass
 
@@ -706,6 +728,155 @@ class AgentExecutor:
             )
         lines.append("--- END WIKI ---")
         return {"success": True, "message": "\n".join(lines)}
+
+    def _do_get_summary(self, params: dict) -> dict:
+        """Cheap fetch of a path's existing in-source summary.
+
+        For .py / .pyi files: returns the module docstring (text only, no
+        triple-quotes). For folders: returns the body of
+        ``<folder>/_folder_summary.md``. For markdown files: returns the
+        first paragraph. Use this BEFORE read_file when you only need
+        orientation — avoids pulling whole files into context."""
+        target = params.get("path", "").strip()
+        if not target:
+            return {"success": False,
+                    "message": "ACTION: get_summary — ERROR: path is required"}
+        full = (self.project_dir / target).resolve()
+        if not full.exists():
+            return {"success": False,
+                    "message": f"ACTION: get_summary {target} — NOT FOUND"}
+
+        if full.is_dir():
+            summary_file = full / "_folder_summary.md"
+            if summary_file.is_file():
+                try:
+                    body = summary_file.read_text(encoding="utf-8", errors="replace")
+                except Exception as exc:
+                    return {"success": False,
+                            "message": f"ACTION: get_summary {target} — READ ERROR: {exc}"}
+                return {"success": True,
+                        "message": (f"ACTION: get_summary {target} (folder)\n\n"
+                                    + body[:2000])}
+            return {"success": False,
+                    "message": (f"ACTION: get_summary {target} — no "
+                                f"_folder_summary.md yet (will be auto-"
+                                f"generated after a write/edit in this folder)")}
+
+        suffix = full.suffix.lower()
+        try:
+            text = full.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return {"success": False,
+                    "message": f"ACTION: get_summary {target} — READ ERROR: {exc}"}
+
+        if suffix in (".py", ".pyi"):
+            try:
+                from summary_indexer import _python_module_docstring
+                import ast as _ast
+                tree = _ast.parse(text)
+                doc = _python_module_docstring(tree)
+                if doc and doc.value.value:
+                    return {"success": True,
+                            "message": (f"ACTION: get_summary {target}\n\n"
+                                        + doc.value.value[:2000])}
+            except Exception:
+                pass
+            return {"success": False,
+                    "message": (f"ACTION: get_summary {target} — no module "
+                                f"docstring (will be auto-generated after a "
+                                f"write/edit)")}
+
+        if suffix in (".md", ".rst", ".txt"):
+            # First paragraph (until blank line) — usually the orientation.
+            chunks = re.split(r"\n\s*\n", text.strip(), maxsplit=1)
+            return {"success": True,
+                    "message": f"ACTION: get_summary {target}\n\n{chunks[0][:2000]}"}
+
+        return {"success": False,
+                "message": (f"ACTION: get_summary {target} — unsupported "
+                            f"extension {suffix!r}; use read_file instead")}
+
+    def _do_find_relevant_files(self, params: dict) -> dict:
+        """Rank project files by relevance to a free-text query.
+
+        Scoring is keyword-based — the query is tokenised, each token is
+        matched against (a) the file path, (b) the module docstring if any,
+        (c) any ``_folder_summary.md`` in the file's chain of parent folders.
+        Cheap, deterministic, no embeddings. Returns the top-K ranked paths
+        with a one-line snippet from each summary.
+        """
+        query = params.get("query", "").strip().lower()
+        top_k = min(int(params.get("top_k", 10)), 30)
+        if not query:
+            return {"success": False,
+                    "message": "ACTION: find_relevant_files — ERROR: query required"}
+
+        from project_scanner import list_project_files
+        try:
+            from summary_indexer import (
+                _python_module_docstring, SKIP_PATTERNS as _SKIP,
+            )
+        except Exception:
+            _python_module_docstring = None  # type: ignore[assignment]
+            _SKIP = ()
+
+        terms = [t for t in re.split(r"\W+", query) if len(t) >= 3]
+        if not terms:
+            return {"success": False,
+                    "message": "ACTION: find_relevant_files — ERROR: query too short"}
+
+        files = list_project_files(self.project_dir) or []
+        scored: list[tuple[float, str, str]] = []
+        for f in files:
+            rel = f.get("path", "")
+            if not rel or rel.endswith(".lock"):
+                continue
+            if any(s in rel.replace("\\", "/") for s in _SKIP):
+                continue
+            full = self.project_dir / rel
+            if not full.is_file():
+                continue
+            haystack = rel.lower()
+            snippet = ""
+            if _python_module_docstring and full.suffix.lower() in (".py", ".pyi"):
+                try:
+                    import ast as _ast
+                    tree = _ast.parse(full.read_text(encoding="utf-8",
+                                                     errors="replace"))
+                    doc = _python_module_docstring(tree)
+                    if doc and doc.value.value:
+                        haystack += "\n" + doc.value.value.lower()
+                        snippet = doc.value.value.split("\n")[0][:120]
+                except Exception:
+                    pass
+            # Folder summary up the chain (one level).
+            try:
+                folder_summary = full.parent / "_folder_summary.md"
+                if folder_summary.is_file():
+                    haystack += "\n" + folder_summary.read_text(
+                        encoding="utf-8", errors="replace").lower()
+            except Exception:
+                pass
+
+            score = sum(haystack.count(t) for t in terms)
+            # Bonus: query terms appearing in the path itself rank higher.
+            score += sum(2 for t in terms if t in rel.lower())
+            if score > 0:
+                scored.append((float(score), rel, snippet))
+
+        scored.sort(key=lambda r: r[0], reverse=True)
+        if not scored:
+            return {"success": True,
+                    "message": (f"ACTION: find_relevant_files '{query}' — "
+                                f"0 matches across {len(files)} files")}
+
+        out = [f"ACTION: find_relevant_files '{query}' — top {min(top_k, len(scored))} of {len(scored)} matches"]
+        for score, rel, snippet in scored[:top_k]:
+            line = f"  [score={score:>4.1f}] {rel}"
+            if snippet:
+                line += f"\n    {snippet}"
+            out.append(line)
+        return {"success": True, "message": "\n".join(out)}
 
     def _do_query_file_section(self, params: dict) -> dict:
         """Read specific lines or GUID-tagged section from a file."""

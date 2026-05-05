@@ -1588,12 +1588,70 @@ class SprintRunner:
 
         sprint_result.total_duration = time.time() - overall_start
 
+        # Drain summary indexer queue — refresh module docstrings, folder
+        # _folder_summary.md, and the README auto-section for every file
+        # that was edited this sprint. Cheap (only files whose non-comment
+        # hash changed actually call the LLM) and runs after the sprint so
+        # it doesn't block per-action latency.
+        try:
+            self._drain_summary_indexer()
+        except Exception as exc:
+            _log(f"[SUMMARY] indexer drain failed: {exc}")
+
         _log(f"{'=' * 60}")
         _log(f"[SPRINT] Sprint #{sprint_number} finished in "
              f"{sprint_result.total_duration:.1f}s — {sprint_result.status}")
         _log(f"{'=' * 60}")
 
         return sprint_result
+
+    def _drain_summary_indexer(self) -> None:
+        """If a SummaryIndexer was attached during task execution, drain its
+        queue. Each task's AgentProtocol owns its own indexer; we collect
+        them via _executors_seen in _execute_single_task."""
+        # SprintRunner doesn't keep a single AgentProtocol — each task creates
+        # its own. The simplest hook: build an indexer here scoped to the
+        # project dir and run a *full walk* limited to files Git considers
+        # modified since the sprint start. This keeps the drain self-contained
+        # and avoids cross-process state.
+        try:
+            from summary_indexer import SummaryIndexer
+        except ImportError:
+            return
+        endpoint = (self.provider_config or {}).get(
+            "endpoint", "http://localhost:11434"
+        )
+        # Cheap dedicated summary model — overrideable per provider config.
+        model = (self.provider_config or {}).get("summary_model", "llama3.2:3b")
+        indexer = SummaryIndexer(
+            project_dir=self.project_dir, endpoint=endpoint, model=model,
+        )
+        # Find files modified since the sprint started (use git status). We
+        # only need source files; fall back to "everything Python" if git is
+        # unavailable.
+        try:
+            import subprocess as _sp
+            result = _sp.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", cwd=str(self.project_dir), timeout=15,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    # Porcelain format: " M path", "?? path", "AM path", etc.
+                    p = line[3:].strip().strip('"')
+                    if " -> " in p:
+                        p = p.split(" -> ", 1)[1]
+                    if p.endswith((".py", ".pyi")):
+                        indexer.enqueue(self.project_dir / p)
+        except Exception:
+            pass
+        counts = indexer.drain()
+        total = counts["files"] + counts["folders"] + counts["project"]
+        if total > 0:
+            _log(f"[SUMMARY] refreshed {counts['files']} file / "
+                 f"{counts['folders']} folder / {counts['project']} project "
+                 f"summary block(s)")
 
     def _execute_phase(self, step: dict):
         """Dispatch a single pipeline step based on its phase_type.

@@ -108,6 +108,19 @@ AVAILABLE_ACTIONS = [
         "Get a compact file index of the project (path, language, line_count, last_modified) "
         "sorted by recency. Use this at the start of a task to understand the codebase."),
      "params": {"limit": "int (optional, max files to return, default 25)"}},
+    {"name": "get_summary", "description": (
+        "Cheap fetch of a path's existing in-source summary — module "
+        "docstring for .py files, _folder_summary.md for folders, first "
+        "paragraph for .md/.rst. Use this BEFORE read_file when you only "
+        "need orientation; avoids pulling whole files into context."),
+     "params": {"path": "string (file or folder, relative to project)"}},
+    {"name": "find_relevant_files", "description": (
+        "Rank project files by relevance to a free-text query. Scores by "
+        "keyword matches against file paths, module docstrings, and folder "
+        "summaries. Returns top-K paths with a one-line snippet each. Use "
+        "this when planning a task to find which files matter."),
+     "params": {"query": "string (free-text, e.g. 'paddle ai tracking')",
+                 "top_k": "int (optional, default 10, max 30)"}},
     {"name": "search_by_guid", "description": (
         "Find a specific GUID tag across all project files. Returns the file path, "
         "line number, and 10 lines of surrounding context."),
@@ -175,6 +188,26 @@ class AgentProtocol:
         # Load adapter
         self.adapter = get_adapter(provider, provider_config)
 
+        # Change-driven summary indexer (docstrings, _folder_summary.md,
+        # README.md auto-section). Hooked into agent_executor below so every
+        # write_file / edit_file enqueues the path; SprintRunner drains the
+        # queue at sprint end. Uses a cheap local model (default llama3.2:3b)
+        # so summaries don't compete for the main agent's tokens.
+        try:
+            from summary_indexer import SummaryIndexer
+            _summary_endpoint = (provider_config or {}).get("endpoint",
+                                                             "http://localhost:11434")
+            _summary_model = (provider_config or {}).get("summary_model",
+                                                          "llama3.2:3b")
+            self.summary_indexer = SummaryIndexer(
+                project_dir=self.project_dir,
+                endpoint=_summary_endpoint,
+                model=_summary_model,
+            )
+        except Exception as exc:
+            log.debug("summary indexer unavailable: %s", exc)
+            self.summary_indexer = None  # type: ignore[assignment]
+
         # CRITICAL: pin the adapter's subprocess cwd to the project directory.
         # Without this the Claude CLI subprocess inherits Automatica's own cwd
         # and edits files in the wrong repository — every "file already exists"
@@ -227,6 +260,8 @@ class AgentProtocol:
             self.executor.set_db_handler(db_handler, session_id=self.session_id)
         if view_handler:
             self.executor.set_view_handler(view_handler)
+        if self.summary_indexer is not None:
+            self.executor.set_summary_indexer(self.summary_indexer)
 
         self.db_handler = db_handler
 

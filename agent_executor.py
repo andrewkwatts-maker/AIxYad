@@ -667,17 +667,21 @@ class AgentExecutor:
                         if params.get("acknowledge_duplicate") and params.get("reason"):
                             pass  # allowed; fall through to write
                         else:
-                            # Surface a peek of the FIRST existing file so the
-                            # agent can decide in one turn: edit it, or re-call
-                            # with acknowledge_duplicate.
+                            # Surface a peek of the FIRST existing file +
+                            # echo the agent's submitted content back so the
+                            # agent can decide in ONE turn without losing work.
                             _first = _existing_dups[0]
                             try:
-                                _peek = _first.read_text(
+                                _peek_lines = _first.read_text(
                                     encoding="utf-8", errors="replace"
-                                ).splitlines()[:25]
-                                _peek_text = "\n  ".join(_peek)
+                                ).splitlines()
+                                _existing_total = len(_peek_lines)
+                                _peek_text = "\n  ".join(_peek_lines[:30])
+                                if _existing_total > 30:
+                                    _peek_text += f"\n  ...({_existing_total - 30} more lines)"
                             except Exception:
                                 _peek_text = "(could not read)"
+                                _existing_total = 0
                             _locs = ", ".join(
                                 str(p.relative_to(self.project_dir)).replace("\\", "/")
                                 for p in _existing_dups
@@ -685,21 +689,45 @@ class AgentExecutor:
                             _first_rel = str(
                                 _first.relative_to(self.project_dir)
                             ).replace("\\", "/")
+
+                            # Echo the submitted content back so agent doesn't
+                            # have to regenerate. Cap at 80 lines so token
+                            # budget stays sane on big writes.
+                            _submitted_lines = (content or "").splitlines()
+                            _submitted_total = len(_submitted_lines)
+                            _submitted_preview = "\n  ".join(_submitted_lines[:80])
+                            if _submitted_total > 80:
+                                _submitted_preview += f"\n  ...({_submitted_total - 80} more lines truncated)"
+
                             return {
                                 "success": False,
                                 "message": (
                                     f"ACTION: write_file {rel_path} — DENIED "
                                     f"(a file named {_basename!r} already exists "
                                     f"at: {_locs})\n\n"
-                                    f"First 25 lines of {_first_rel}:\n"
+                                    f"=== EXISTING file: {_first_rel} "
+                                    f"({_existing_total} lines) ===\n"
                                     f"  {_peek_text}\n\n"
-                                    f"Pick one:\n"
-                                    f"  (1) MERGE/EDIT: call edit_file on "
-                                    f"{_first_rel} to add your changes there.\n"
-                                    f"  (2) KEEP SEPARATE: re-call write_file "
-                                    f"with params.acknowledge_duplicate=true "
-                                    f"and params.reason=\"<why these are "
-                                    f"genuinely different>\"."
+                                    f"=== YOUR submitted content for {rel_path} "
+                                    f"({_submitted_total} lines, preserved below) ===\n"
+                                    f"  {_submitted_preview}\n\n"
+                                    f"Recommended next action — pick one:\n"
+                                    f"  (1) MERGE: call edit_file on "
+                                    f"{_first_rel} with old_text=<a snippet "
+                                    f"from the existing file above> and "
+                                    f"new_text=<that snippet + the relevant "
+                                    f"part of your submitted content>. This "
+                                    f"is the right call for refactor/extract/"
+                                    f"rename/polish tasks.\n"
+                                    f"  (2) REPLACE the existing file: call "
+                                    f"write_file on {_first_rel} (the "
+                                    f"existing path) with your submitted "
+                                    f"content — overwrite is auto-enabled.\n"
+                                    f"  (3) KEEP SEPARATE: re-call write_file "
+                                    f"on {rel_path} with "
+                                    f"params.acknowledge_duplicate=true and "
+                                    f"params.reason=\"<why these are "
+                                    f"genuinely different concerns>\"."
                                 ),
                             }
                 except Exception:

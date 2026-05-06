@@ -623,42 +623,87 @@ class AgentExecutor:
                     ),
                 }
 
-            # ── HARD: basename collision with existing source ─────────────
-            # Caught the Pong sprawl: 3 ball.py (src/ball.py +
-            # src/game_objects/ball.py + src/pong/ball.py), paddle code in
-            # 7 places. If a file with the same basename already exists
-            # anywhere in the project, REJECT the new write — force the
-            # agent to edit_file the existing file instead.
-            try:
-                _basename = full_path_check.name
-                _existing_dups: list[Path] = []
-                for _existing in self.project_dir.rglob(_basename):
-                    if _existing.resolve() == full_path_check:
-                        continue
-                    _parts = _existing.relative_to(self.project_dir).parts
-                    if any(p in self.HARD_FORBIDDEN_PATH_PARTS for p in _parts):
-                        continue
-                    if "_Discarded" in _parts:
-                        continue
-                    _existing_dups.append(_existing)
-                    if len(_existing_dups) >= 3:
-                        break
-                if _existing_dups:
-                    _locs = ", ".join(
-                        str(p.relative_to(self.project_dir)).replace("\\", "/")
-                        for p in _existing_dups
-                    )
-                    return {
-                        "success": False,
-                        "message": (
-                            f"ACTION: write_file {rel_path} — DENIED (a file "
-                            f"named {_basename!r} already exists at: {_locs}). "
-                            f"Edit the existing file with edit_file. Do NOT "
-                            f"create a duplicate at a new path."
-                        ),
-                    }
-            except Exception:
-                pass  # best-effort
+            # ── Basename collision: hard-fail unless legitimate or ack'd ──
+            # Caught the Pong sprawl: 3 ball.py, paddle code in 7 places.
+            # Most collisions are mistakes (force edit_file on canonical).
+            # Some are legitimate — auto-allow those. Otherwise the
+            # rejection message includes a peek at the existing file plus
+            # an explicit opt-out (params.acknowledge_duplicate=True +
+            # params.reason="...") for the rare valid case.
+            _basename = full_path_check.name
+            _basename_lc = _basename.lower()
+
+            # Auto-allowed legitimate collisions (don't even check):
+            #   • __init__.py, conftest.py, _folder_summary.md — meant to repeat
+            #   • test_<x>.py in tests/ when src/<x>.py exists (mirror pattern)
+            _is_test_mirror = (
+                _rel_norm.startswith("tests/")
+                and (_basename_lc.startswith("test_") or _basename_lc.endswith("_test.py"))
+            )
+            _auto_allowed_basenames = {"__init__.py", "conftest.py",
+                                       "_folder_summary.md", "readme.md"}
+            _skip_basename_check = (
+                _basename_lc in _auto_allowed_basenames or _is_test_mirror
+            )
+
+            if not _skip_basename_check:
+                try:
+                    _existing_dups: list[Path] = []
+                    for _existing in self.project_dir.rglob(_basename):
+                        if _existing.resolve() == full_path_check:
+                            continue
+                        _parts = _existing.relative_to(self.project_dir).parts
+                        if any(p in self.HARD_FORBIDDEN_PATH_PARTS for p in _parts):
+                            continue
+                        if "_Discarded" in _parts:
+                            continue
+                        _existing_dups.append(_existing)
+                        if len(_existing_dups) >= 3:
+                            break
+
+                    if _existing_dups:
+                        # Opt-out: agent explicitly acknowledged this is
+                        # legitimately separate (different domain, etc.).
+                        if params.get("acknowledge_duplicate") and params.get("reason"):
+                            pass  # allowed; fall through to write
+                        else:
+                            # Surface a peek of the FIRST existing file so the
+                            # agent can decide in one turn: edit it, or re-call
+                            # with acknowledge_duplicate.
+                            _first = _existing_dups[0]
+                            try:
+                                _peek = _first.read_text(
+                                    encoding="utf-8", errors="replace"
+                                ).splitlines()[:25]
+                                _peek_text = "\n  ".join(_peek)
+                            except Exception:
+                                _peek_text = "(could not read)"
+                            _locs = ", ".join(
+                                str(p.relative_to(self.project_dir)).replace("\\", "/")
+                                for p in _existing_dups
+                            )
+                            _first_rel = str(
+                                _first.relative_to(self.project_dir)
+                            ).replace("\\", "/")
+                            return {
+                                "success": False,
+                                "message": (
+                                    f"ACTION: write_file {rel_path} — DENIED "
+                                    f"(a file named {_basename!r} already exists "
+                                    f"at: {_locs})\n\n"
+                                    f"First 25 lines of {_first_rel}:\n"
+                                    f"  {_peek_text}\n\n"
+                                    f"Pick one:\n"
+                                    f"  (1) MERGE/EDIT: call edit_file on "
+                                    f"{_first_rel} to add your changes there.\n"
+                                    f"  (2) KEEP SEPARATE: re-call write_file "
+                                    f"with params.acknowledge_duplicate=true "
+                                    f"and params.reason=\"<why these are "
+                                    f"genuinely different>\"."
+                                ),
+                            }
+                except Exception:
+                    pass  # best-effort
 
             # ── HARD: subdir colliding with existing module file ─────────
             # Caught the Pong sprawl: src/paddle.py + src/paddle/ as a

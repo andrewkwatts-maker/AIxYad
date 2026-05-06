@@ -382,6 +382,19 @@ class AgentProtocol:
         except Exception:
             pass  # standards block is best-effort
 
+        # Pull setup-wizard "WHY" notes (PROJECT_CONTEXT.md) — captured by
+        # automatica_poll.ps1 during interactive setup. Surfaces user-supplied
+        # constraints / audience / motivation that don't belong in CLAUDE.md.
+        try:
+            _ctx_path = self.project_dir / ".automatica" / "PROJECT_CONTEXT.md"
+            if _ctx_path.is_file():
+                _ctx_text = _ctx_path.read_text(encoding="utf-8",
+                                                  errors="replace")[:1500]
+                if _ctx_text.strip():
+                    request['project_context'] = _ctx_text
+        except Exception:
+            pass
+
         # Add wiki summary: top 25 files by recency so agents know the codebase layout
         try:
             _files = list_project_files(self.project_dir)

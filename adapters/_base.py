@@ -422,6 +422,13 @@ class BaseAdapter(ABC):
                           "and call need_help."))
             parts.append("")
 
+        # ── Project context / "why" notes (set during interactive setup) ──
+        ctx = request.get("project_context")
+        if ctx and ctx.strip():
+            parts.append("== PROJECT CONTEXT (why this matters / constraints) ==")
+            parts.append(ctx.rstrip())
+            parts.append("")
+
         # ── Existing project files ────────────────────────────────────────
         # Surfaced FIRST (well — second, after standards) so the agent reckons
         # with reality before reading the task. Without this, agent_protocol

@@ -46,32 +46,99 @@ function Write-Log([string]$msg) {
 $RunScript = Join-Path $AutomaticaDir "run_autonomous.py"
 
 # ── Interactive setup ─────────────────────────────────────────────────────
-# If no goal was supplied AND the project has no DB yet, walk the user
-# through setup instead of silently looping over an empty backlog forever.
+# Walk the user through a who/what/when/where/why setup if they launched
+# without enough info — instead of silently looping over an empty backlog.
 $ProjectDbPath = Join-Path $Project ".automatica\project.db"
-if (($ProjectGoal -eq "") -and -not (Test-Path $ProjectDbPath)) {
+$NeedsSetup = ($ProjectGoal -eq "") -and -not (Test-Path $ProjectDbPath)
+
+if ($NeedsSetup) {
     Write-Host ""
     Write-Host "==== Automatica setup ====" -ForegroundColor Cyan
-    Write-Host "Project folder: $Project"
-    if (-not (Test-Path $Project)) {
-        Write-Host "  (folder does not exist; will be created)"
-    }
-    Write-Host "Provider:       $Provider"
-    Write-Host "Cycle interval: ${IntervalHours}h"
+    Write-Host "Walking you through 5 quick choices. Press Enter to accept the default in [brackets]."
     Write-Host ""
-    Write-Host "No project goal set, and no project DB exists yet."
-    Write-Host "Describe what you want built (one line, can be long):"
-    $ProjectGoal = Read-Host "Goal"
+
+    # WHERE: project folder
+    Write-Host "WHERE - project folder" -ForegroundColor Yellow
+    Write-Host "  Where should the code live? Will be created if it doesn't exist."
+    $reply = Read-Host "  Project folder [$Project]"
+    if (-not [string]::IsNullOrWhiteSpace($reply)) { $Project = $reply }
+    Write-Host ""
+
+    # WHO: provider/model
+    Write-Host "WHO - which AI does the work" -ForegroundColor Yellow
+    Write-Host "  Local Ollama choices: Phi4, Mistral, Llama3.1, DeepseekCoder"
+    Write-Host "  Cloud (slower turnaround, costs $$): Claude-Sonnet, Claude-Opus"
+    $reply = Read-Host "  Provider [$Provider]"
+    if (-not [string]::IsNullOrWhiteSpace($reply)) { $Provider = $reply }
+    Write-Host ""
+
+    # WHAT: goal
+    Write-Host "WHAT - the goal" -ForegroundColor Yellow
+    Write-Host "  One line, as concrete as you can. The agent uses this to generate"
+    Write-Host "  the initial backlog. Bad: 'make a game'. Good: 'Pong in pygame:"
+    Write-Host "  W/S left, UP/DOWN right, ball bounces, score to 10 wins, ESC quits.'"
+    $ProjectGoal = Read-Host "  Goal"
     if ([string]::IsNullOrWhiteSpace($ProjectGoal)) {
         Write-Host ""
-        Write-Host "No goal entered. Aborting — re-run with -ProjectGoal '<your goal>' or enter a goal at this prompt." -ForegroundColor Yellow
+        Write-Host "Goal is required. Aborting." -ForegroundColor Yellow
         exit 1
     }
+    Write-Host ""
+
+    # WHEN: interval
+    Write-Host "WHEN - cycle cadence" -ForegroundColor Yellow
+    Write-Host "  Hours between sprint cycles. 0.5 = every 30 min (active dev),"
+    Write-Host "  1 = hourly, 4 = ~6x/day, 12 = twice/day."
+    $reply = Read-Host "  Interval hours [$IntervalHours]"
+    if (-not [string]::IsNullOrWhiteSpace($reply)) {
+        try { $IntervalHours = [double]$reply } catch {
+            Write-Host "  (couldn't parse '$reply' as a number; keeping $IntervalHours)" -ForegroundColor DarkGray
+        }
+    }
+    Write-Host ""
+
+    # WHY: optional notes / context
+    Write-Host "WHY - context the agent should know (optional)" -ForegroundColor Yellow
+    Write-Host "  Constraints, deadlines, audience, why this matters. Press Enter to skip."
+    $WhyNotes = Read-Host "  Notes"
+    Write-Host ""
+
+    # Confirm
+    Write-Host "Summary:" -ForegroundColor Cyan
+    Write-Host "  WHERE:    $Project"
+    Write-Host "  WHO:      $Provider"
+    Write-Host "  WHAT:     $ProjectGoal"
+    Write-Host "  WHEN:     every ${IntervalHours}h"
+    if (-not [string]::IsNullOrWhiteSpace($WhyNotes)) {
+        Write-Host "  WHY:      $WhyNotes"
+    }
+    Write-Host ""
+    $confirm = Read-Host "Start the poll loop? [Y/n]"
+    if ($confirm -match '^(n|no)$') {
+        Write-Host "Aborted." -ForegroundColor Yellow
+        exit 1
+    }
+
+    # Create folder if needed and persist the WHY notes for the agent to read.
     if (-not (Test-Path $Project)) {
         New-Item -ItemType Directory -Path $Project -Force | Out-Null
     }
+    if (-not [string]::IsNullOrWhiteSpace($WhyNotes)) {
+        $autoDir = Join-Path $Project ".automatica"
+        New-Item -ItemType Directory -Path $autoDir -Force | Out-Null
+        $notesFile = Join-Path $autoDir "PROJECT_CONTEXT.md"
+        @"
+# Project Context (set during initial setup)
+
+$WhyNotes
+"@ | Set-Content -Path $notesFile -Encoding UTF8
+        Write-Host "  Saved context notes -> $notesFile" -ForegroundColor DarkGray
+    }
+
+    # Recompute SleepSeconds in case interval changed
+    $SleepSeconds = [int]($IntervalHours * 3600)
     Write-Host ""
-    Write-Host "Goal accepted. Starting poll loop." -ForegroundColor Green
+    Write-Host "Starting poll loop." -ForegroundColor Green
     Write-Host ""
 }
 

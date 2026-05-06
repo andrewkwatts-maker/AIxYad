@@ -257,6 +257,11 @@ class AgentExecutor:
         # route entries to the right notepad and by _build_prompt to inject
         # the task's persistent notes into every iteration.
         self._current_task_id: str = ""
+        # Files the agent has actually inspected this session (via read_file,
+        # merge_files, or write_file overwrite). Used by the basename-collision
+        # gate: agent can only "keep separate" via acknowledge_duplicate=True
+        # AFTER they have actually looked at the existing canonical file.
+        self._inspected_paths: set[str] = set()
 
     def set_summary_indexer(self, indexer) -> None:
         """Attach a SummaryIndexer so file-mutating actions auto-enqueue."""
@@ -433,6 +438,16 @@ class AgentExecutor:
             content = full_path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             return {"success": False, "message": f"ACTION: read_file {rel_path} — ERROR: {exc}"}
+
+        # Mark this path as inspected. Unblocks the "keep separate" opt-out
+        # in write_file's basename-collision gate — agent can only assert
+        # "these are genuinely different" AFTER they've read the canonical.
+        try:
+            self._inspected_paths.add(
+                str(full_path.relative_to(self.project_dir)).replace("\\", "/").lower()
+            )
+        except Exception:
+            pass
 
         lines = content.splitlines(keepends=True)
         total_lines = len(lines)
@@ -663,9 +678,32 @@ class AgentExecutor:
 
                     if _existing_dups:
                         # Opt-out: agent explicitly acknowledged this is
-                        # legitimately separate (different domain, etc.).
-                        if params.get("acknowledge_duplicate") and params.get("reason"):
+                        # legitimately separate AFTER actually inspecting the
+                        # canonical (read_file or merge_files). Without that
+                        # inspection check, small models would just always pass
+                        # acknowledge_duplicate=True to bypass.
+                        _first_rel_lc = str(
+                            _existing_dups[0].relative_to(self.project_dir)
+                        ).replace("\\", "/").lower()
+                        _ack = bool(params.get("acknowledge_duplicate") and params.get("reason"))
+                        _has_inspected = _first_rel_lc in self._inspected_paths
+                        if _ack and _has_inspected:
                             pass  # allowed; fall through to write
+                        elif _ack and not _has_inspected:
+                            # Tried to skip the inspection. Reject with a
+                            # specific instruction.
+                            return {
+                                "success": False,
+                                "message": (
+                                    f"ACTION: write_file {rel_path} — DENIED "
+                                    f"(acknowledge_duplicate=true requires you "
+                                    f"to first inspect the existing file at "
+                                    f"{_first_rel_lc}. Call read_file or "
+                                    f"merge_files on it, then re-attempt "
+                                    f"write_file with acknowledge_duplicate "
+                                    f"and reason.)"
+                                ),
+                            }
                         else:
                             # Surface a peek of the FIRST existing file +
                             # echo the agent's submitted content back so the
@@ -938,6 +976,248 @@ class AgentExecutor:
                 pass
         return {"success": True,
                 "message": f"ACTION: copy_file {src} -> {dst} — SUCCESS"}
+
+    def _do_merge_files(self, params: dict) -> dict:
+        """Consolidate a duplicate file into a canonical one.
+
+        Three input shapes:
+          (a) target + source: read both, merge source's non-duplicate
+              top-level imports/defs/classes into target, discard source.
+          (b) target + new_content: same merge logic but using a literal
+              content string (e.g. content the agent had drafted but
+              write_file rejected for collision).
+          (c) target only: just inspect target — useful as the "step that
+              proves I looked" before declaring acknowledge_duplicate=true.
+
+        Always marks target (and source if provided) as inspected so a
+        subsequent write_file with acknowledge_duplicate is allowed.
+        """
+        target = params.get("target", "") or params.get("dest", "") or params.get("dst", "")
+        source = params.get("source", "") or params.get("src", "")
+        new_content = params.get("new_content", "")
+
+        if not target:
+            return {"success": False,
+                    "message": "ACTION: merge_files — ERROR: target is required"}
+
+        for label, p in (("target", target), ("source", source)):
+            if not p:
+                continue
+            check = self._check_path(p)
+            if not check["safe"]:
+                return {"success": False,
+                        "message": f"ACTION: merge_files {label}={p} — DENIED ({check['reason']})"}
+
+        target_full = (self.project_dir / target).resolve()
+        if not target_full.is_file():
+            return {"success": False,
+                    "message": f"ACTION: merge_files target={target} — TARGET NOT FOUND"}
+
+        try:
+            target_text = target_full.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return {"success": False,
+                    "message": f"ACTION: merge_files {target} — ERROR reading target: {exc}"}
+
+        # Mark target inspected immediately — even pure-inspect calls count.
+        try:
+            self._inspected_paths.add(
+                str(target_full.relative_to(self.project_dir)).replace("\\", "/").lower()
+            )
+        except Exception:
+            pass
+
+        # Determine the source content
+        source_text: str = ""
+        source_full = None
+        if source:
+            source_full = (self.project_dir / source).resolve()
+            if not source_full.is_file():
+                return {"success": False,
+                        "message": f"ACTION: merge_files source={source} — SOURCE NOT FOUND"}
+            try:
+                source_text = source_full.read_text(encoding="utf-8", errors="replace")
+            except Exception as exc:
+                return {"success": False,
+                        "message": f"ACTION: merge_files {source} — ERROR reading source: {exc}"}
+            try:
+                self._inspected_paths.add(
+                    str(source_full.relative_to(self.project_dir)).replace("\\", "/").lower()
+                )
+            except Exception:
+                pass
+        elif new_content:
+            source_text = new_content
+        else:
+            # Inspect-only mode. Return target structure so the agent can
+            # decide what to do next.
+            target_lines = target_text.splitlines()
+            preview = "\n  ".join(target_lines[:60])
+            tail = ""
+            if len(target_lines) > 60:
+                tail = f"\n  ...({len(target_lines) - 60} more lines)"
+            return {"success": True,
+                    "message": (
+                        f"ACTION: merge_files {target} — INSPECTED (no source given). "
+                        f"target has {len(target_lines)} lines. First 60:\n  "
+                        f"{preview}{tail}\n\n"
+                        f"Now you can: (a) edit_file {target} to add new logic, "
+                        f"(b) call merge_files again with source/new_content to "
+                        f"merge automatically, or (c) write_file at a different "
+                        f"path with acknowledge_duplicate=true if these are "
+                        f"genuinely separate concerns."
+                    )}
+
+        # ── Smart merge (Python-only AST diff; falls back to safe append) ─
+        merged_text, merge_summary = self._smart_merge_python(
+            target_text, source_text, target_path=target, source_path=source or "<inline>"
+        )
+
+        # Write the merged content back to target
+        try:
+            with _os_file_lock(target_full):
+                target_full.write_text(merged_text, encoding="utf-8")
+        except OSError as exc:
+            return {"success": False,
+                    "message": f"ACTION: merge_files {target} — ERROR writing: {exc}"}
+
+        # Discard the source file (soft-delete) if it was a real path
+        discarded_msg = ""
+        if source_full is not None:
+            try:
+                from datetime import datetime, timezone
+                # Move to _Discarded/ with timestamp + original-path suffix
+                disc_root = self.project_dir / "_Discarded"
+                disc_root.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                rel_src_str = str(source_full.relative_to(self.project_dir)).replace("/", "_").replace("\\", "_")
+                disc_path = disc_root / f"{ts}__{rel_src_str}"
+                source_full.rename(disc_path)
+                discarded_msg = f" Discarded source -> _Discarded/{disc_path.name}"
+            except Exception as exc:
+                discarded_msg = f" (NOTE: source still on disk; could not discard: {exc})"
+
+        # Enqueue summary refresh
+        if self._summary_indexer is not None:
+            try:
+                self._summary_indexer.enqueue(target_full)
+            except Exception:
+                pass
+
+        return {"success": True,
+                "message": (
+                    f"ACTION: merge_files {source or '<inline>'} -> {target} — "
+                    f"SUCCESS. {merge_summary}.{discarded_msg}"
+                )}
+
+    def _smart_merge_python(self, target_text: str, source_text: str,
+                              target_path: str = "", source_path: str = "") -> tuple:
+        """Merge source Python content into target. Returns (merged_text, summary).
+
+        Strategy:
+          1. Parse both with ast. If parsing fails for either, fall back to
+             safe append with a separator comment.
+          2. Index target's top-level names (functions, classes, imports).
+          3. For each top-level node in source:
+             - skip if its name is already in target (avoid duplicate defs)
+             - keep imports that are already present (deduped)
+             - append unique top-level statements to the end of target
+        """
+        import ast as _ast
+
+        # Try Python AST merge first
+        try:
+            target_tree = _ast.parse(target_text)
+            source_tree = _ast.parse(source_text)
+        except Exception:
+            # Non-Python or parse failure: safe append
+            sep = (f"\n\n# ── merged from {source_path} "
+                   f"({len(source_text.splitlines())} lines) ──\n")
+            merged = target_text.rstrip() + sep + source_text.lstrip()
+            return merged, "merged via append (one or both files not parseable Python)"
+
+        # Index target's top-level names + imports
+        target_names: set = set()
+        target_imports: set = set()
+        for node in target_tree.body:
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                target_names.add(node.name)
+            elif isinstance(node, _ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, _ast.Name):
+                        target_names.add(t.id)
+            elif isinstance(node, _ast.Import):
+                for alias in node.names:
+                    target_imports.add(alias.name)
+            elif isinstance(node, _ast.ImportFrom):
+                for alias in node.names:
+                    target_imports.add(f"{node.module}.{alias.name}" if node.module else alias.name)
+
+        # Walk source's top-level nodes, keep only unique ones
+        new_imports_src: list = []
+        new_defs_src: list = []
+        skipped: list = []
+        source_lines = source_text.splitlines()
+
+        def _node_src(n) -> str:
+            try:
+                return _ast.get_source_segment(source_text, n) or ""
+            except Exception:
+                return ""
+
+        for node in source_tree.body:
+            seg = _node_src(node)
+            if not seg.strip():
+                continue
+            if isinstance(node, _ast.Import):
+                for alias in node.names:
+                    if alias.name not in target_imports:
+                        new_imports_src.append(seg)
+                        target_imports.add(alias.name)
+                        break
+            elif isinstance(node, _ast.ImportFrom):
+                key = f"{node.module}.{node.names[0].name}" if node.module else node.names[0].name
+                if key not in target_imports:
+                    new_imports_src.append(seg)
+                    target_imports.add(key)
+            elif isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                if node.name in target_names:
+                    skipped.append(node.name)
+                else:
+                    new_defs_src.append(seg)
+                    target_names.add(node.name)
+            elif isinstance(node, _ast.Assign):
+                # Append assignments unconditionally (they might be config the
+                # agent wants to add). But if the LHS name already exists, skip.
+                tgt_names = [t.id for t in node.targets if isinstance(t, _ast.Name)]
+                if any(n in target_names for n in tgt_names):
+                    skipped.extend(tgt_names)
+                else:
+                    new_defs_src.append(seg)
+                    target_names.update(tgt_names)
+            else:
+                # Other top-level statements (e.g. expressions, if-blocks):
+                # append them so the agent's intent isn't lost.
+                new_defs_src.append(seg)
+
+        # Build the merged file: existing target + new imports (after existing
+        # imports if possible — we just append at end for safety) + new defs.
+        merged_parts = [target_text.rstrip()]
+        if new_imports_src:
+            merged_parts.append("\n# ── merged imports ──\n" + "\n".join(new_imports_src))
+        if new_defs_src:
+            merged_parts.append("\n\n# ── merged definitions ──\n\n"
+                                + "\n\n".join(new_defs_src))
+        merged_text = "\n".join(merged_parts) + "\n"
+
+        summary = (
+            f"added {len(new_imports_src)} import(s) and "
+            f"{len(new_defs_src)} top-level definition(s); "
+            f"skipped {len(skipped)} duplicate name(s)"
+        )
+        if skipped:
+            summary += f" ({', '.join(skipped[:5])}{'...' if len(skipped) > 5 else ''})"
+        return merged_text, summary
 
     def _do_take_note(self, params: dict) -> dict:
         """Append a note to the agent's persistent task scratchpad.

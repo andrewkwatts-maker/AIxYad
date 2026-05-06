@@ -55,6 +55,8 @@ VALID_ACTIONS = frozenset([
     'get_view', 'set_view', 'get_view_compact',
     'get_related_content', 'get_related_keywords', 'set_related_keywords',
     'replace_section', 'insert_line', 'remove_section', 'rename_symbol',
+    # Merge: consolidate duplicate files into a canonical one
+    'merge_files',
 ])
 
 
@@ -98,6 +100,7 @@ Core actions:
 - "write_file": Create / overwrite a file. Always pass overwrite:true. Params: {"path": "...", "content": "...", "overwrite": true}
 - "edit_file":  Replace EXACT text. Params: {"path": "...", "old_text": "...", "new_text": "..."}
 - "copy_file":  Duplicate a file inside the project. Params: {"src": "...", "dst": "...", "overwrite": false}
+- "merge_files": Consolidate a duplicate into the canonical file. The system reads both, dedupes imports, appends non-duplicate definitions from source into target, and discards the source. Use this when write_file rejects with a basename collision and you want option (1) MERGE done for you. Params: {"target": "src/canonical.py", "source": "src/dupe.py" OR "new_content": "..."}
 - "discard_file": SOFT-delete (moves to _Discarded/, reversible). Use this instead of `rm`. Params: {"file_path": "...", "reason": "..."}
 - "restore_file": Bring back a discarded file. Params: {"discard_id": ...} OR {"original_path": "..."}
 - "list_files": List files. Params: {"pattern": "src/**/*.py"}

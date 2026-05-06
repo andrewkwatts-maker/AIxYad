@@ -1600,12 +1600,213 @@ class SprintRunner:
         except Exception as exc:
             _log(f"[SUMMARY] indexer drain failed: {exc}")
 
+        # Consolidation pass — scan the project for sprawl (duplicate
+        # basenames, sibling-of-subpackage collisions, tests-in-src) and
+        # auto-queue HIGH priority merge/refactor tasks. Forces the agent
+        # to spend each subsequent sprint clearing technical debt before
+        # adding new features. Best-effort; never blocks sprint return.
+        try:
+            self._seed_consolidation_tasks()
+        except Exception as exc:
+            _log(f"[CONSOLIDATE] seeding failed: {exc}")
+
         _log(f"{'=' * 60}")
         _log(f"[SPRINT] Sprint #{sprint_number} finished in "
              f"{sprint_result.total_duration:.1f}s — {sprint_result.status}")
         _log(f"{'=' * 60}")
 
         return sprint_result
+
+    def _seed_consolidation_tasks(self) -> None:
+        """Scan the project for sprawl and auto-queue HIGH-priority
+        consolidation tasks. Runs at the end of every sprint so the
+        backlog continually pulls the codebase toward a tight, single-
+        canonical-path layout.
+
+        Detects:
+          • Duplicate basenames across the project (e.g. 3 ball.py)
+          • Subdirs colliding with sibling .py file (paddle.py + paddle/)
+          • Test files inside src/ (src/test_*.py, src/tests/)
+
+        Caps at 4 new tasks per sprint to avoid flooding. Skips
+        basenames that already have an open consolidation task.
+        """
+        from pathlib import Path
+
+        try:
+            conn = self._get_project_conn()
+        except Exception:
+            return
+        if conn is None:
+            return
+
+        # Walk source files only — venv/build/etc are filtered out.
+        try:
+            from project_scanner import list_project_files
+            files = list_project_files(self.project_dir) or []
+        except Exception:
+            files = []
+        if not files:
+            return
+
+        # Group by basename across the project (excluding _Discarded).
+        by_basename: dict = {}
+        for f in files:
+            p = (f.get("path") or "").replace("\\", "/")
+            if not p or "_Discarded/" in p:
+                continue
+            ext = p.rsplit(".", 1)[-1].lower() if "." in p else ""
+            # Only look at source-code-like extensions
+            if ext not in ("py", "js", "ts", "tsx", "jsx", "go", "rs", "java", "c", "cpp", "h", "hpp"):
+                continue
+            base = p.rsplit("/", 1)[-1].lower()
+            # Skip basenames that legitimately repeat
+            if base in ("__init__.py", "conftest.py", "_folder_summary.md"):
+                continue
+            by_basename.setdefault(base, []).append(p)
+
+        # Existing open task titles — to avoid re-queueing the same work
+        existing_titles = {
+            (r["title"] or "").strip().lower()
+            for r in conn.execute(
+                "SELECT title FROM tasks "
+                "WHERE status IN ('backlog','sprint_planned','in_progress')"
+            ).fetchall()
+        }
+
+        # Pick the next available TASK-### display_id
+        existing_ids = {
+            row[0] for row in conn.execute(
+                "SELECT display_id FROM tasks WHERE display_id LIKE 'TASK-%'"
+            ).fetchall()
+        }
+        next_idx = 1
+        def _next_id() -> str:
+            nonlocal next_idx
+            while True:
+                did = f"TASK-{next_idx:03d}"
+                next_idx += 1
+                if did not in existing_ids:
+                    existing_ids.add(did)
+                    return did
+
+        seeded = 0
+
+        # ── Duplicate basenames ─────────────────────────────────────────
+        for base, paths in by_basename.items():
+            if len(paths) < 2:
+                continue
+            paths_sorted = sorted(paths)
+            canonical = paths_sorted[0]
+            duplicates = paths_sorted[1:]
+            title = f"Consolidate {len(paths)} duplicate {base!r} into {canonical}"
+            if title.lower() in existing_titles:
+                continue
+            desc = (
+                f"Multiple files share the basename '{base}': {', '.join(paths_sorted)}.\n"
+                f"1. Read {canonical} (canonical) and each duplicate to understand "
+                f"what each contributes.\n"
+                f"2. For each duplicate at {duplicates}, call merge_files with "
+                f"target='{canonical}' and source='<duplicate path>'. The system "
+                f"will AST-merge unique imports/defs/classes into the canonical "
+                f"file and discard the duplicate.\n"
+                f"3. Update any imports across the project that referenced the "
+                f"old paths (search for them).\n"
+                f"4. Run any existing tests that touch this module to confirm "
+                f"nothing broke."
+            )
+            try:
+                conn.execute(
+                    "INSERT INTO tasks (display_id, title, priority, complexity, "
+                    "description, status) VALUES (?,?,?,?,?,?)",
+                    (_next_id(), title, "HIGH", 5, desc, "backlog"),
+                )
+                seeded += 1
+                _log(f"[CONSOLIDATE] queued: {title[:80]}")
+            except Exception as exc:
+                _log(f"[CONSOLIDATE] insert failed for {title[:60]}: {exc}")
+            if seeded >= 4:
+                break
+
+        # ── Subdir colliding with sibling module (paddle.py + paddle/) ──
+        if seeded < 4:
+            project_root = self.project_dir.resolve()
+            for f in files:
+                p = (f.get("path") or "").replace("\\", "/")
+                if not p.endswith(".py") or "_Discarded/" in p:
+                    continue
+                # If src/paddle.py exists AND src/paddle/ also exists as a dir
+                stem = p[:-3]  # strip .py
+                full_stem = (project_root / stem)
+                if full_stem.is_dir():
+                    title = f"Consolidate {p} with sibling subpackage {stem}/"
+                    if title.lower() in existing_titles:
+                        continue
+                    desc = (
+                        f"{p} co-exists with subpackage {stem}/ — same name, two "
+                        f"locations. Pick one shape:\n"
+                        f"1. Move all relevant code from {stem}/* into {p}, then "
+                        f"discard the subpackage with discard_file on each file "
+                        f"under {stem}/.\n"
+                        f"2. OR move {p}'s code into {stem}/__init__.py and "
+                        f"discard {p}.\n"
+                        f"Update imports across the project to match the chosen "
+                        f"shape. Use merge_files where useful."
+                    )
+                    try:
+                        conn.execute(
+                            "INSERT INTO tasks (display_id, title, priority, complexity, "
+                            "description, status) VALUES (?,?,?,?,?,?)",
+                            (_next_id(), title, "HIGH", 5, desc, "backlog"),
+                        )
+                        seeded += 1
+                        _log(f"[CONSOLIDATE] queued: {title[:80]}")
+                    except Exception:
+                        pass
+                    if seeded >= 4:
+                        break
+
+        # ── Tests inside src/ ───────────────────────────────────────────
+        if seeded < 4:
+            tests_in_src: list = []
+            for f in files:
+                p = (f.get("path") or "").replace("\\", "/").lower()
+                if not p.startswith("src/") or not p.endswith(".py"):
+                    continue
+                base = p.rsplit("/", 1)[-1]
+                if (base.startswith("test_") or base.endswith("_test.py")
+                        or base.endswith("_tests.py")
+                        or "/test/" in "/" + p or "/tests/" in "/" + p):
+                    tests_in_src.append(f.get("path"))
+            if tests_in_src:
+                title = f"Move {len(tests_in_src)} test file(s) from src/ to tests/"
+                if title.lower() not in existing_titles:
+                    desc = (
+                        f"Test code is living under src/ instead of tests/: "
+                        f"{', '.join(tests_in_src[:5])}"
+                        f"{'...' if len(tests_in_src) > 5 else ''}\n"
+                        f"For each one: copy_file from src/<path> to "
+                        f"tests/<basename>, verify the test still passes via "
+                        f"run_command 'python -m pytest tests/<basename> -x', "
+                        f"then discard_file the src/ original."
+                    )
+                    try:
+                        conn.execute(
+                            "INSERT INTO tasks (display_id, title, priority, complexity, "
+                            "description, status) VALUES (?,?,?,?,?,?)",
+                            (_next_id(), title, "HIGH", 3, desc, "backlog"),
+                        )
+                        seeded += 1
+                        _log(f"[CONSOLIDATE] queued: {title[:80]}")
+                    except Exception:
+                        pass
+
+        if seeded:
+            try:
+                conn.commit()
+            except Exception:
+                pass
+            _log(f"[CONSOLIDATE] seeded {seeded} consolidation task(s)")
 
     def _drain_summary_indexer(self) -> None:
         """If a SummaryIndexer was attached during task execution, drain its

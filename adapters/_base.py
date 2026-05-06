@@ -197,7 +197,25 @@ CODE WRITING RULES:
 
 PLACEHOLDER RULES (NEVER do these):
 - NEVER use "/path/to/file.txt", "example.py", "New Task Title", "abc123" as values.
-- ONLY use real values from the task description, file system, or DB query results.\
+- ONLY use real values from the task description, file system, or DB query results.
+
+TESTING & VERIFICATION (you CAN run code — use this):
+- run_command lets you execute python, pytest, py_compile, and other shell tools.
+  Use it to VERIFY your work, not just to "look productive."
+- After writing or editing source code, ALWAYS verify with at least one of:
+    • run_command "python -m py_compile <file>"   (syntax check, fast)
+    • run_command "python -c \\"import <module>\\""  (import smoke test)
+    • run_command "python -m pytest <test_file> -x -q"  (if a test exists)
+- For headless GUI/game code (pygame, kivy, tkinter): set the dummy driver
+  before importing — run_command "python -c \\"import os; os.environ['SDL_VIDEODRIVER']='dummy'; import pong; ...\\""
+- If a task creates a class with mutable state (Ball, Paddle, Player), write a
+  SHORT smoke test in tests/ that constructs it, calls its update method N
+  times, and asserts invariants (e.g. position stays in bounds).
+- A failing smoke test is a SUCCESS signal: you found a bug. Either fix it in
+  the same step (extra edit_file) or take_note describing the bug and call
+  step_done — the next sprint can pick it up.
+- Never claim step_done on a task that wrote new code without at least one
+  py_compile or import check, unless the task is purely documentation.\
 """
 
 

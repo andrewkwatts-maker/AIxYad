@@ -442,8 +442,10 @@ class SprintRunner:
 
         # Auto-recover stale-blocked tasks (cool-down expired) before planning,
         # so a transient hang or rate-limit blip from hours ago doesn't keep
-        # the task permanently ineligible.
-        self._recover_stale_blocks(conn, cool_down_hours=1.0)
+        # the task permanently ineligible. Cool-down is 24h: shorter windows
+        # caused infinite re-fail loops on tasks the local model genuinely
+        # can't complete (subjective polish work, broken proposals).
+        self._recover_stale_blocks(conn, cool_down_hours=24.0)
 
         # Get backlog
         backlog = get_backlog(conn, limit=100)
@@ -730,7 +732,7 @@ class SprintRunner:
         _log(_msg)
 
     def _recover_stale_blocks(
-        self, conn: sqlite3.Connection, cool_down_hours: float = 1.0
+        self, conn: sqlite3.Connection, cool_down_hours: float = 24.0
     ) -> int:
         """Auto-recover blocked tasks whose last_failure_at is older than the
         cool-down window. Resets status to 'backlog' and failure_count to 0 so
@@ -2423,22 +2425,42 @@ class SprintRunner:
             f"Project file census ({len(files)} files; first 30):\n  "
             + "\n  ".join(sample_paths) + "\n\n"
             f"Code samples:\n\n" + "\n\n".join(snippets) + "\n\n"
-            "Propose 5-8 NEW tasks across these categories (mix them — don't "
-            "stack the list with one type):\n"
-            "  • Unit tests for under-tested modules\n"
-            "  • Refactors that apply SOLID principles "
-            "(single-responsibility splits, dependency inversion, etc.)\n"
-            "  • Extract common helpers / dedupe logic\n"
-            "  • Performance: tighten hot loops, avoid per-frame allocations\n"
-            "  • Polish: error handling, docstrings, small UX wins\n"
-            "  • Screenshot/visual review if the app has a UI worth checking\n\n"
+            "Propose 5-8 NEW tasks across these categories. Bias toward the "
+            "VERIFICATION categories first — the project is more valuable when "
+            "every module has a test that exercises it than when more features "
+            "exist without tests. Mix categories — don't stack one type:\n"
+            "  • SMOKE TEST: write tests/test_<module>_smoke.py that imports "
+            "the module, constructs key classes, calls their update/move/run "
+            "methods N times, asserts invariants (positions in bounds, no "
+            "exceptions). For pygame/kivy: set SDL_VIDEODRIVER=dummy first.\n"
+            "  • UNIT TESTS for under-tested modules — assert specific "
+            "input/output, edge cases, boundary behavior.\n"
+            "  • BOUNDS / INVARIANT ASSERTIONS in production code — add "
+            "assert/clamp where a class has mutable state that could drift "
+            "out of valid range (e.g. Ball.y oscillating outside screen).\n"
+            "  • REFACTORS that apply SOLID (single-responsibility splits, "
+            "dependency inversion, extract interface).\n"
+            "  • EXTRACT common helpers / dedupe logic.\n"
+            "  • PERFORMANCE: tighten hot loops, avoid per-frame allocations.\n"
+            "  • POLISH: error handling, docstrings, type hints, logging.\n"
+            "  • CI/QUALITY GATE: add build.bat invocation, pytest config, "
+            "ruff/black config, coverage threshold.\n\n"
             "Constraints:\n"
             "  - DO NOT repeat the recently-completed tasks above.\n"
-            "  - Each task must reference a real file/path from the census.\n"
+            "  - Each task must reference a real file/path from the census, "
+            "OR propose creating a NEW file under a canonical layout dir "
+            "(tests/, src/, scripts/, config/, etc.).\n"
             "  - Keep titles concrete (\"Refactor Paddle.update to extract "
             "AI-tracking helper\" not \"Improve paddle\").\n"
             "  - Each description: 1-3 numbered action steps in plain English. "
-            "NO code in descriptions.\n\n"
+            "NO code in descriptions.\n"
+            "  - FORBIDDEN: subjective / observational tasks. The agent has no "
+            "human, no display, and no way to 'review', 'screenshot', "
+            "'visually inspect', 'check smoothness', or 'verify behavior' by "
+            "looking. Every task must produce a concrete code change "
+            "measurable by diff, file existence, or test pass — not by "
+            "judgment. If you want behavior verified, write a TEST that "
+            "asserts the behavior; do not write a 'review' task.\n\n"
             "Respond ONLY with a JSON array. No markdown. No prose.\n"
             'Example: [{"title":"Add unit tests for src/ball.py update()",'
             '"description":"1. Create tests/test_ball.py\\n2. Cover '
@@ -2530,9 +2552,28 @@ class SprintRunner:
         import re as _re
         _PATH_TOKEN = _re.compile(r"[\w./\\-]+\.[A-Za-z0-9]{1,6}")
 
+        # Canonical layout dirs — paths under these are legitimate creation
+        # targets even if they don't exist yet. Mirrors AgentExecutor.ALLOWED_ROOT_DIRS.
+        try:
+            from agent_executor import AgentExecutor as _AE
+            _ALLOWED_ROOTS = set(getattr(_AE, "ALLOWED_ROOT_DIRS", set()))
+        except Exception:
+            _ALLOWED_ROOTS = {
+                "src", "tests", "test", "lib", "include", "app", "core",
+                "scripts", "examples", "samples", "benchmarks", "internal",
+                "config", "configs", "conf", "settings", "docs", "doc",
+                "documentation", "assets", "data", "fixtures", "resources",
+                "static", "templates", "build", "dist", "out", "target",
+                "_Discarded", "cmd", "pkg", "bin",
+            }
+        _ALLOWED_ROOTS_LC = {d.lower() for d in _ALLOWED_ROOTS}
+
         def _task_paths_resolve(title: str, desc: str) -> tuple[bool, list[str]]:
             """Pick path-shaped tokens out of a proposed task and check that
-            each one exists in the project. Returns (all_resolved, missing).
+            each one is either (a) an existing project file, or (b) a
+            legitimate path under a canonical layout dir (src/, tests/, etc.)
+            that the task can create. Only INVENTED root-level paths
+            (PaddleTracking.py, paddle_ai/foo.py) are rejected.
             Vacuously OK if the task names no paths."""
             text = f"{title}\n{desc}"
             tokens = set(_PATH_TOKEN.findall(text))
@@ -2549,6 +2590,11 @@ class SprintRunner:
                 if norm in existing_path_set:
                     continue
                 if norm.rsplit("/", 1)[-1] in existing_path_set:
+                    continue
+                # Accept paths whose top-level dir is a canonical layout dir
+                # (legitimate place to create new files).
+                top = norm.split("/", 1)[0] if "/" in norm else ""
+                if top and top in _ALLOWED_ROOTS_LC:
                     continue
                 missing_paths.append(tok)
             return (len(missing_paths) == 0, missing_paths)
@@ -2605,6 +2651,57 @@ class SprintRunner:
         conn.commit()
         _log(f"[REPLENISH] Backlog refilled with {inserted} review-driven "
              f"task(s){f', rejected {rejected} with invented paths' if rejected else ''}")
+
+        # ── Deterministic smoke-test seed ─────────────────────────────────
+        # Independent of the model: scan src/ for modules that don't have a
+        # paired tests/test_<name>_smoke.py and seed one task per missing
+        # smoke test. This guarantees the backlog always converges toward
+        # "every module is verified" — even if the model proposes nothing.
+        try:
+            seeded = 0
+            existing_titles = {
+                (r["title"] or "").strip().lower()
+                for r in conn.execute(
+                    "SELECT title FROM tasks WHERE status IN ('backlog','sprint_planned','in_progress','done')"
+                ).fetchall()
+            }
+            for f in files:
+                p = (f.get("path") or "").replace("\\", "/")
+                if not (p.startswith("src/") and p.endswith(".py")):
+                    continue
+                if p.endswith("/__init__.py") or p.endswith("_summary.md"):
+                    continue
+                module_name = p[len("src/"):-len(".py")].replace("/", "_")
+                test_path = f"tests/test_{module_name}_smoke.py"
+                # Already has a smoke test on disk? skip.
+                if test_path.lower() in existing_path_set:
+                    continue
+                title = f"Add smoke test {test_path} for {p}"
+                if title.lower() in existing_titles:
+                    continue
+                desc = (
+                    f"1. Create {test_path}.\n"
+                    f"2. Set os.environ['SDL_VIDEODRIVER']='dummy' before pygame import.\n"
+                    f"3. Import {p}, construct its key class(es), call update/move/draw "
+                    f"~50 times, assert positions stay within screen bounds and no exceptions raise.\n"
+                    f"4. Verify with run_command python -m pytest {test_path} -x -q."
+                )
+                display_id = _next_display_id()
+                conn.execute(
+                    "INSERT INTO tasks (display_id, title, priority, complexity, "
+                    "description, status) VALUES (?,?,?,?,?,?)",
+                    (display_id, title, "HIGH", 3, desc, "backlog"),
+                )
+                seeded += 1
+                _log(f"[REPLENISH] Seeded smoke test: {display_id} — {title[:60]}")
+                if seeded >= 3:  # cap per cycle to avoid flooding
+                    break
+            if seeded:
+                conn.commit()
+                inserted += seeded
+        except Exception as exc:
+            _log(f"[REPLENISH] Smoke-test seeding failed: {exc}")
+
         return inserted
 
     def _execute_review_phase(self, step: dict):

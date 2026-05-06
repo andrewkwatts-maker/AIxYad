@@ -1017,6 +1017,19 @@ def main():
             if status == "failed" and planned == 0:
                 write_obs(f"  [OBS] Sprint failed with 0 tasks planned -- check pipeline/DB state")
             if status == "empty":
+                # Don't exit just because the planner picked 0 tasks. The
+                # backlog can be 0 while blocked tasks sit in cooldown
+                # (waiting for stale-recovery) — and in either case the
+                # loop should try a review-driven replenish before giving
+                # up. Empty sprints used to break the loop immediately,
+                # which left a project at 7/8 done with one blocked task
+                # and no path forward except a manual relaunch.
+                if counts.get("has_goal") and not getattr(args, "no_replenish", False):
+                    added = _replenish_via_review(project_dir, args.provider, write_obs)
+                    if added > 0:
+                        write_obs(f"  [OBS] Empty sprint — replenished with "
+                                  f"{added} review-driven tasks; continuing")
+                        continue
                 write_obs(f"  [OBS] Backlog empty -- all done")
                 break
 

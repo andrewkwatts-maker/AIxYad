@@ -676,6 +676,29 @@ class AgentProtocol:
                 _prefix = f"batch[{sub_idx}] " if _is_batch else ""
 
                 if action == 'step_done':
+                    # ── Stub-content guard ─────────────────────────────────
+                    # Caught the actual Pong-run failure mode: agent claimed
+                    # TASK-002 "Create basic game window" done with src/main.py
+                    # being just print('Hello, world!'). Scan files_changed
+                    # for obvious stubs and reject step_done if any match.
+                    _stub_files = self._detect_stub_files(
+                        params.get('files_changed', []) or [],
+                        task,
+                    )
+                    if _stub_files:
+                        self.history.append({
+                            'role': 'system',
+                            'content': (
+                                f"STEP_DONE REJECTED: the following files are "
+                                f"stubs (print/pass/empty, no real implementation): "
+                                f"{', '.join(_stub_files)}. The task is not done. "
+                                f"Replace stub content with a real implementation, "
+                                f"then call step_done again."
+                            ),
+                        })
+                        stop_batch = True
+                        break
+
                     # In legacy mode we still honour confirm_before_done.
                     if self.confirm_before_done:
                         confirm_result = self._confirm_done(task, request, sub, i)
@@ -790,6 +813,82 @@ class AgentProtocol:
             'duration': time.time() - start_time,
             'action_log': self.executor.get_log(),
         }
+
+    def _detect_stub_files(self, files_changed: list, task: dict) -> list:
+        """Return paths of stub files among files_changed.
+
+        Stub = file whose content is so trivial it can't possibly satisfy a
+        non-doc task: only a print()/pass/single string literal/empty body.
+        Pure-doc tasks (titles like "Add docstrings…") are exempt.
+        """
+        # Documentation-only tasks legitimately produce small files; skip the check.
+        title = (task.get('title') or '').lower()
+        if any(kw in title for kw in ('docstring', 'documentation', 'readme',
+                                      'license', 'comment')):
+            return []
+
+        stubs: list = []
+        for entry in files_changed:
+            if not isinstance(entry, str) or not entry:
+                continue
+            rel = entry.replace('\\', '/').lstrip('./')
+            # Only scrutinize source files we'd treat as real implementations.
+            if not rel.endswith(('.py', '.ts', '.tsx', '.js', '.jsx', '.go', '.rs', '.java', '.c', '.cpp')):
+                continue
+            try:
+                fp = (self.project_dir / rel).resolve()
+                if not fp.is_file():
+                    continue
+                txt = fp.read_text(encoding='utf-8', errors='replace')
+            except Exception:
+                continue
+
+            # Strip GUID line + comments + blank lines, then look at substance.
+            substantive = []
+            for line in txt.splitlines():
+                s = line.strip()
+                if not s:
+                    continue
+                if s.startswith(('#', '//')):
+                    continue
+                substantive.append(s)
+
+            if not substantive:
+                stubs.append(rel)
+                continue
+
+            # Joined non-comment body, lower-cased for pattern matching.
+            body = '\n'.join(substantive)
+            body_lc = body.lower()
+
+            # Telltale stubs:
+            #   • single print() call
+            #   • single pass / ... / "TODO"
+            #   • single string literal (module docstring with no code)
+            stub_patterns = (
+                r"^print\([^)]*\)\s*$",
+                r"^pass\s*$",
+                r"^\.\.\.\s*$",
+                r"^['\"][^'\"]*['\"]\s*$",  # bare string literal
+                r"^todo\b",
+                r"^raise\s+notimplementederror",
+            )
+            if len(substantive) <= 2:
+                if any(re.match(p, body_lc) for p in stub_patterns):
+                    stubs.append(rel)
+                    continue
+
+            # Heuristic: if body has NO def / class / function / =, it's
+            # almost certainly a stub regardless of length.
+            if (len(substantive) <= 5
+                    and 'def ' not in body
+                    and 'class ' not in body
+                    and 'function ' not in body
+                    and '=' not in body
+                    and 'import ' not in body):
+                stubs.append(rel)
+
+        return stubs
 
     def _confirm_done(self, task: dict, request: dict, done_response: dict, iteration: int) -> str:
         """S3-W02: Confirmation round before accepting step_done.

@@ -2671,6 +2671,18 @@ class SprintRunner:
                     continue
                 if p.endswith("/__init__.py") or p.endswith("_summary.md"):
                     continue
+                # Skip stub modules — seeding a smoke test for a file that's
+                # just `print('Hello, world!')` produces a vacuous passing
+                # test that hides the underlying problem (the module is empty).
+                try:
+                    _src_text = (self.project_dir / p).read_text(
+                        encoding="utf-8", errors="replace")
+                    if ("def " not in _src_text
+                            and "class " not in _src_text
+                            and len(_src_text.strip()) < 200):
+                        continue
+                except Exception:
+                    continue
                 module_name = p[len("src/"):-len(".py")].replace("/", "_")
                 test_path = f"tests/test_{module_name}_smoke.py"
                 # Already has a smoke test on disk? skip.

@@ -603,6 +603,88 @@ class AgentExecutor:
                     ),
                 }
 
+            # ── HARD: tests must NOT live inside src/ ──────────────────────
+            # Caught the actual Pong-run sprawl: src/test/, src/tests/,
+            # src/test_*.py, src/paddle_tests.py. Tests belong in tests/.
+            _rel_norm = rel_path.replace("\\", "/").lower()
+            _basename_lc = full_path_check.name.lower()
+            if _rel_norm.startswith("src/") and (
+                "/test/" in "/" + _rel_norm or "/tests/" in "/" + _rel_norm
+                or _basename_lc.startswith("test_")
+                or _basename_lc.endswith("_test.py")
+                or _basename_lc.endswith("_tests.py")
+            ):
+                return {
+                    "success": False,
+                    "message": (
+                        f"ACTION: write_file {rel_path} — DENIED (tests must "
+                        f"live under tests/, not src/). Rewrite to "
+                        f"tests/{full_path_check.name}."
+                    ),
+                }
+
+            # ── HARD: basename collision with existing source ─────────────
+            # Caught the Pong sprawl: 3 ball.py (src/ball.py +
+            # src/game_objects/ball.py + src/pong/ball.py), paddle code in
+            # 7 places. If a file with the same basename already exists
+            # anywhere in the project, REJECT the new write — force the
+            # agent to edit_file the existing file instead.
+            try:
+                _basename = full_path_check.name
+                _existing_dups: list[Path] = []
+                for _existing in self.project_dir.rglob(_basename):
+                    if _existing.resolve() == full_path_check:
+                        continue
+                    _parts = _existing.relative_to(self.project_dir).parts
+                    if any(p in self.HARD_FORBIDDEN_PATH_PARTS for p in _parts):
+                        continue
+                    if "_Discarded" in _parts:
+                        continue
+                    _existing_dups.append(_existing)
+                    if len(_existing_dups) >= 3:
+                        break
+                if _existing_dups:
+                    _locs = ", ".join(
+                        str(p.relative_to(self.project_dir)).replace("\\", "/")
+                        for p in _existing_dups
+                    )
+                    return {
+                        "success": False,
+                        "message": (
+                            f"ACTION: write_file {rel_path} — DENIED (a file "
+                            f"named {_basename!r} already exists at: {_locs}). "
+                            f"Edit the existing file with edit_file. Do NOT "
+                            f"create a duplicate at a new path."
+                        ),
+                    }
+            except Exception:
+                pass  # best-effort
+
+            # ── HARD: subdir colliding with existing module file ─────────
+            # Caught the Pong sprawl: src/paddle.py + src/paddle/ as a
+            # subpackage. Block writing INTO a subdir whose name matches an
+            # existing .py / .ts / .js sibling.
+            try:
+                _parent = full_path_check.parent
+                _stem = _parent.name
+                if _parent != self.project_dir.resolve():
+                    _grandparent = _parent.parent
+                    for _ext in (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs"):
+                        _sibling = _grandparent / f"{_stem}{_ext}"
+                        if _sibling.is_file():
+                            _rel_sib = _sibling.relative_to(self.project_dir)
+                            return {
+                                "success": False,
+                                "message": (
+                                    f"ACTION: write_file {rel_path} — DENIED "
+                                    f"(subdir {_stem}/ collides with existing "
+                                    f"module {_rel_sib}). Either edit_file "
+                                    f"the module, or rename your target."
+                                ),
+                            }
+            except Exception:
+                pass
+
         full_path = (self.project_dir / rel_path).resolve()
 
         # Auto-upgrade: if file exists and overwrite not explicitly set, allow it
@@ -636,37 +718,9 @@ class AgentExecutor:
             except Exception:
                 pass
 
-        # Anti-duplicate warning. If a file with the same basename already
-        # exists somewhere else in the project, the agent is probably
-        # creating a duplicate (paddle.py + paddle_ai/movement.py + …).
-        # Phi4 reliably triggers this on refactor tasks. Surface the
-        # warning in the message so the agent can self-correct on the
-        # next iteration.
-        warning = ""
-        try:
-            basename = full_path.name
-            for existing in self.project_dir.rglob(basename):
-                if existing.resolve() == full_path:
-                    continue
-                # Skip system/state dirs (matches HARD_FORBIDDEN_PATH_PARTS).
-                if any(p in self.HARD_FORBIDDEN_PATH_PARTS
-                       for p in existing.relative_to(self.project_dir).parts):
-                    continue
-                rel_existing = existing.relative_to(self.project_dir)
-                warning = (
-                    f"\nWARNING: a file named {basename!r} already exists at "
-                    f"{rel_existing} — this is likely a DUPLICATE. If your "
-                    f"task is a refactor/extract/rename, you should have "
-                    f"edit_file'd the existing file instead. Consider "
-                    f"discard_file on this new write, or merging back."
-                )
-                break
-        except Exception:
-            pass
-
         return {
             "success": True,
-            "message": f"ACTION: write_file {rel_path} — SUCCESS ({line_count} lines written){warning}",
+            "message": f"ACTION: write_file {rel_path} — SUCCESS ({line_count} lines written)",
         }
 
     def _do_edit_file(self, params: dict) -> dict:

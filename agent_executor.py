@@ -486,13 +486,25 @@ class AgentExecutor:
         "dockerfile", ".dockerignore",
         "agents.md",
     })
-    # Sibling subdirectories at the project root that the agent shouldn't
-    # create (it should use src/<name>/ or merge into src/<name>.py instead).
-    # Always-on regardless of whether src/ exists.
-    BANNED_ROOT_DIRS = frozenset({
-        "paddle", "paddle_ai", "ball", "game", "gameplay", "engine",
-        "graphics", "ai", "utils", "helpers", "common", "core_lib",
-        "scoring", "scoring_system", "modules", "module",
+    # Positive allowlist for root-level subdirectories. Anything else at
+    # depth-1 is banned — the model otherwise invents paddle/, paddle_ai/,
+    # paddle_game/, pong_modules/, core_v2/ etc. The named-bans approach
+    # only catches the pattern after we've seen it once.
+    ALLOWED_ROOT_DIRS = frozenset({
+        # Source / tests / library code
+        "src", "tests", "test", "lib", "include", "app", "core",
+        "scripts", "examples", "samples", "benchmarks", "internal",
+        # Config / docs / data
+        "config", "configs", "conf", "settings",
+        "docs", "doc", "documentation",
+        "assets", "data", "fixtures", "resources", "static", "templates",
+        # Build / output (we don't write here but the agent may try)
+        "build", "dist", "out", "target",
+        # Automatica-specific
+        "_Discarded",
+        # Common per-language directories
+        "cmd", "pkg",                   # Go
+        "bin",                          # binaries
     })
 
     def _layout_violation(self, rel_path: str) -> Optional[str]:
@@ -538,12 +550,16 @@ class AgentExecutor:
                     f"project) is banned. Put '{Path(norm).name}' under "
                     f"src/ instead.")
 
-        # Banned sibling subfolders at root — paddle/, ai/, utils/, etc.
-        if len(parts) >= 2 and parts[0].lower() in self.BANNED_ROOT_DIRS:
-            return (f"Layout rule: '{parts[0]}/' at the project root is "
-                    f"banned (it should be under src/). Put '{Path(norm).name}' "
-                    f"at src/{parts[0]}/{Path(norm).name}, or merge the "
-                    f"logic into the existing src/{parts[0]}.py.")
+        # Positive allowlist for root-level directories. Anything not in
+        # ALLOWED_ROOT_DIRS at depth 1 is banned — closes the "agent invents
+        # a new sibling folder name we hadn't blacklisted" loophole.
+        if len(parts) >= 2 and parts[0].lower() not in self.ALLOWED_ROOT_DIRS:
+            return (f"Layout rule: '{parts[0]}/' is not a recognised "
+                    f"project-root directory. Allowed root dirs are: "
+                    f"src/, tests/, lib/, app/, scripts/, examples/, "
+                    f"config/, docs/, assets/, data/. "
+                    f"Put '{Path(norm).name}' under src/{parts[0]}/{Path(norm).name} "
+                    f"or merge the logic into an existing module under src/.")
 
         # Catch-all for non-source files at root that aren't allowed.
         # Lets src/, tests/, config/, docs/ subdirectories be anything,

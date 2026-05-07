@@ -1610,6 +1610,17 @@ class SprintRunner:
         except Exception as exc:
             _log(f"[CONSOLIDATE] seeding failed: {exc}")
 
+        # Runtime smoke check — does the project's entrypoint actually
+        # compile and import? Without this, the loop ran 12h in a previous
+        # sprint with src/main.py being just print('Hello, world!') yet
+        # 32 tasks marked done. The smoke check queues HIGH priority fix
+        # tasks for any compile/import failure — those preempt all other
+        # work on the next sprint.
+        try:
+            self._runtime_smoke_check()
+        except Exception as exc:
+            _log(f"[SMOKE] runtime smoke check failed: {exc}")
+
         _log(f"{'=' * 60}")
         _log(f"[SPRINT] Sprint #{sprint_number} finished in "
              f"{sprint_result.total_duration:.1f}s — {sprint_result.status}")
@@ -1674,6 +1685,72 @@ class SprintRunner:
             ).fetchall()
         }
 
+        # Recently-done task titles (last 24h) → throttle. A title that was
+        # marked done >=3 times yet the underlying sprawl is STILL on disk
+        # means the agent is fake-completing; we stop re-queuing and audit.
+        # 1-2 prior dones means: requeue but escalate (HIGH, complexity bump,
+        # description preface noting the prior failures).
+        recent_done_counts: dict = {}
+        try:
+            for r in conn.execute(
+                "SELECT title, COUNT(*) c FROM tasks "
+                "WHERE status='done' "
+                "  AND completed_at IS NOT NULL "
+                "  AND completed_at >= datetime('now', '-1 day') "
+                "GROUP BY title"
+            ).fetchall():
+                recent_done_counts[(r["title"] or "").strip().lower()] = r["c"]
+        except Exception:
+            pass
+
+        _VALID_COMPLEXITY = (1, 2, 3, 5, 8, 13, 21, 34, 55, 89)
+
+        def _bump_complexity(c: int) -> int:
+            for v in _VALID_COMPLEXITY:
+                if v > c:
+                    return v
+            return _VALID_COMPLEXITY[-1]
+
+        def _check_throttle(title: str, base_priority: str, base_cx: int,
+                              base_desc: str) -> tuple:
+            """Returns (should_skip, priority, complexity, description).
+            Encodes the "stuck >=3 / escalate 1-2" policy."""
+            n = recent_done_counts.get(title.lower(), 0)
+            if n >= 3:
+                # Stuck: log audit, skip queueing.
+                try:
+                    conn.execute(
+                        "INSERT INTO action_log (scope, scope_id, actor, "
+                        "action, detail) VALUES (?,?,?,?,?)",
+                        ("project", 0, "consolidator", "stuck",
+                         json.dumps({
+                             "title": title,
+                             "recent_done_count_24h": n,
+                             "note": ("Title marked done {n}x in last 24h "
+                                      "but underlying sprawl still on disk; "
+                                      "needs human intervention.").format(n=n),
+                         })),
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
+                _log(f"[CONSOLIDATE] STUCK ({n}x done in 24h, sprawl persists): "
+                     f"{title[:80]}")
+                return (True, base_priority, base_cx, base_desc)
+            if n >= 1:
+                bumped_cx = _bump_complexity(base_cx)
+                preface = (
+                    f"⚠ The previous {n} attempt(s) at this exact task "
+                    f"in the last 24h ALL claimed done — but the sprawl "
+                    f"is STILL on disk. Earlier completions were stub-"
+                    f"only or partial. This run MUST actually merge / "
+                    f"discard files. Use merge_files for AST-aware "
+                    f"consolidation; do not just edit one file and call "
+                    f"step_done.\n\n"
+                )
+                return (False, "HIGH", bumped_cx, preface + base_desc)
+            return (False, base_priority, base_cx, base_desc)
+
         # Pick the next available TASK-### display_id
         existing_ids = {
             row[0] for row in conn.execute(
@@ -1710,16 +1787,22 @@ class SprintRunner:
                 f"target='{canonical}' and source='<duplicate path>'. The system "
                 f"will AST-merge unique imports/defs/classes into the canonical "
                 f"file and discard the duplicate.\n"
+                f"  Example: {{\"action\":\"merge_files\","
+                f"\"params\":{{\"target\":\"{canonical}\","
+                f"\"source\":\"{duplicates[0] if duplicates else ''}\"}}}}\n"
                 f"3. Update any imports across the project that referenced the "
                 f"old paths (search for them).\n"
                 f"4. Run any existing tests that touch this module to confirm "
                 f"nothing broke."
             )
+            skip, prio, cx, desc = _check_throttle(title, "HIGH", 5, desc)
+            if skip:
+                continue
             try:
                 conn.execute(
                     "INSERT INTO tasks (display_id, title, priority, complexity, "
                     "description, status) VALUES (?,?,?,?,?,?)",
-                    (_next_id(), title, "HIGH", 5, desc, "backlog"),
+                    (_next_id(), title, prio, cx, desc, "backlog"),
                 )
                 seeded += 1
                 _log(f"[CONSOLIDATE] queued: {title[:80]}")
@@ -1748,16 +1831,22 @@ class SprintRunner:
                         f"1. Move all relevant code from {stem}/* into {p}, then "
                         f"discard the subpackage with discard_file on each file "
                         f"under {stem}/.\n"
+                        f"  Example: {{\"action\":\"merge_files\","
+                        f"\"params\":{{\"target\":\"{p}\","
+                        f"\"source\":\"{stem}/<file>.py\"}}}}\n"
                         f"2. OR move {p}'s code into {stem}/__init__.py and "
                         f"discard {p}.\n"
                         f"Update imports across the project to match the chosen "
                         f"shape. Use merge_files where useful."
                     )
+                    skip, prio, cx, desc = _check_throttle(title, "HIGH", 5, desc)
+                    if skip:
+                        continue
                     try:
                         conn.execute(
                             "INSERT INTO tasks (display_id, title, priority, complexity, "
                             "description, status) VALUES (?,?,?,?,?,?)",
-                            (_next_id(), title, "HIGH", 5, desc, "backlog"),
+                            (_next_id(), title, prio, cx, desc, "backlog"),
                         )
                         seeded += 1
                         _log(f"[CONSOLIDATE] queued: {title[:80]}")
@@ -1790,16 +1879,18 @@ class SprintRunner:
                         f"run_command 'python -m pytest tests/<basename> -x', "
                         f"then discard_file the src/ original."
                     )
-                    try:
-                        conn.execute(
-                            "INSERT INTO tasks (display_id, title, priority, complexity, "
-                            "description, status) VALUES (?,?,?,?,?,?)",
-                            (_next_id(), title, "HIGH", 3, desc, "backlog"),
-                        )
-                        seeded += 1
-                        _log(f"[CONSOLIDATE] queued: {title[:80]}")
-                    except Exception:
-                        pass
+                    skip, prio, cx, desc = _check_throttle(title, "HIGH", 3, desc)
+                    if not skip:
+                        try:
+                            conn.execute(
+                                "INSERT INTO tasks (display_id, title, priority, complexity, "
+                                "description, status) VALUES (?,?,?,?,?,?)",
+                                (_next_id(), title, prio, cx, desc, "backlog"),
+                            )
+                            seeded += 1
+                            _log(f"[CONSOLIDATE] queued: {title[:80]}")
+                        except Exception:
+                            pass
 
         if seeded:
             try:
@@ -1807,6 +1898,164 @@ class SprintRunner:
             except Exception:
                 pass
             _log(f"[CONSOLIDATE] seeded {seeded} consolidation task(s)")
+
+    def _runtime_smoke_check(self) -> None:
+        """End-of-sprint runtime check: does the project actually compile
+        and import? Queues HIGH-priority fix tasks for any failure so the
+        next sprint preempts all other work until the entrypoint runs.
+
+        Skips entirely if no canonical entrypoint exists (project is
+        still bootstrapping). Currently Python-only — that's where most
+        autonomous projects land.
+        """
+        import subprocess as _sp
+        from pathlib import Path as _Path
+
+        # Detect language from project goal so we don't run python checks
+        # against a Go project.
+        try:
+            from automatica_db import get_project_setting
+            from run_autonomous import _detect_language
+        except Exception:
+            return
+        try:
+            conn = self._get_project_conn()
+        except Exception:
+            return
+        if conn is None:
+            return
+        try:
+            goal = (get_project_setting(conn, "project_goal", "") or "").strip()
+        except Exception:
+            goal = ""
+        language = _detect_language(goal) if goal else "python"
+        if language != "python":
+            return  # other languages: TODO
+
+        # Find entrypoint candidates. Prefer src/main.py, then main.py at root.
+        candidates = [
+            self.project_dir / "src" / "main.py",
+            self.project_dir / "main.py",
+        ]
+        entry: _Path = None  # type: ignore[assignment]
+        for c in candidates:
+            if c.is_file():
+                entry = c
+                break
+        if entry is None:
+            return  # no entrypoint yet
+
+        rel_entry = str(entry.relative_to(self.project_dir)).replace("\\", "/")
+        _log(f"[SMOKE] runtime check on {rel_entry}")
+
+        # Existing open task titles — to avoid re-queueing
+        try:
+            existing_titles = {
+                (r["title"] or "").strip().lower()
+                for r in conn.execute(
+                    "SELECT title FROM tasks "
+                    "WHERE status IN ('backlog','sprint_planned','in_progress')"
+                ).fetchall()
+            }
+        except Exception:
+            existing_titles = set()
+
+        # Pick next display_id
+        existing_ids = {
+            row[0] for row in conn.execute(
+                "SELECT display_id FROM tasks WHERE display_id LIKE 'TASK-%'"
+            ).fetchall()
+        }
+        idx = 1
+        def _next_id() -> str:
+            nonlocal idx
+            while True:
+                d = f"TASK-{idx:03d}"
+                idx += 1
+                if d not in existing_ids:
+                    existing_ids.add(d)
+                    return d
+
+        def _queue_fix(title: str, desc: str, complexity: int = 3):
+            t_lc = title.lower()
+            if t_lc in existing_titles:
+                _log(f"[SMOKE] fix task already queued: {title[:60]}")
+                return
+            try:
+                conn.execute(
+                    "INSERT INTO tasks (display_id, title, priority, "
+                    "complexity, description, status) VALUES (?,?,?,?,?,?)",
+                    (_next_id(), title, "HIGH", complexity, desc, "backlog"),
+                )
+                conn.commit()
+                _log(f"[SMOKE] queued fix: {title[:80]}")
+            except Exception as exc:
+                _log(f"[SMOKE] insert failed: {exc}")
+
+        # 1. py_compile — fast syntax check
+        try:
+            r = _sp.run(
+                ["python", "-m", "py_compile", str(entry)],
+                capture_output=True, text=True, timeout=30,
+            )
+        except Exception as exc:
+            _log(f"[SMOKE] py_compile invocation error: {exc}")
+            return
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or "").strip()[:1000]
+            _queue_fix(
+                title=f"Fix syntax error in {rel_entry}",
+                desc=(
+                    f"`python -m py_compile {rel_entry}` failed at end of "
+                    f"sprint. The project does not compile. This is the "
+                    f"highest-priority fix — every other task is blocked "
+                    f"on this.\n\nError output:\n{err}\n\n"
+                    f"1. Read {rel_entry}.\n"
+                    f"2. Fix the syntax error.\n"
+                    f"3. Verify with run_command "
+                    f"\"python -m py_compile {rel_entry}\".\n"
+                ),
+                complexity=3,
+            )
+            return  # if compile fails, import will too — skip the import check
+
+        # 2. import smoke — does the module actually load?
+        # cd into entry.parent so relative imports work.
+        try:
+            r = _sp.run(
+                ["python", "-c",
+                 ("import os, sys; "
+                  "os.environ['SDL_VIDEODRIVER']='dummy'; "
+                  "sys.path.insert(0, '.'); "
+                  f"import {entry.stem}")],
+                cwd=str(entry.parent),
+                capture_output=True, text=True, timeout=30,
+                env={**__import__('os').environ, "SDL_VIDEODRIVER": "dummy"},
+            )
+        except Exception as exc:
+            _log(f"[SMOKE] import invocation error: {exc}")
+            return
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or "").strip()[:1500]
+            _queue_fix(
+                title=f"Fix import error in {rel_entry}",
+                desc=(
+                    f"`python -c \"import {entry.stem}\"` failed at end of "
+                    f"sprint (with SDL_VIDEODRIVER=dummy for headless "
+                    f"pygame). The module won't load. This is the "
+                    f"highest-priority fix.\n\nError output:\n{err}\n\n"
+                    f"1. Read {rel_entry} and any modules it imports.\n"
+                    f"2. Fix the import / runtime error at module load "
+                    f"time (typo, missing dep, bad sys.path, etc.).\n"
+                    f"3. Verify with run_command \"cd src && python -c "
+                    f"\\\"import os; os.environ['SDL_VIDEODRIVER']='dummy'; "
+                    f"import {entry.stem}\\\"\".\n"
+                ),
+                complexity=3,
+            )
+            return
+
+        _log(f"[SMOKE] {rel_entry} compiles + imports OK")
 
     def _drain_summary_indexer(self) -> None:
         """If a SummaryIndexer was attached during task execution, drain its

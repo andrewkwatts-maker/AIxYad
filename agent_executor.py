@@ -233,11 +233,50 @@ class AgentExecutor:
         "rename_symbol":        "can_edit_file",
     }
 
+    # Per-language file-extension allowlists. write_file rejects writes whose
+    # extension isn't in the allowlist for the project's detected language.
+    # Catches cross-language sprawl like main.cpp landing in a Python project.
+    LANGUAGE_EXTENSIONS = {
+        "python": {".py", ".pyx", ".pyi", ".md", ".rst", ".txt", ".yaml", ".yml",
+                   ".json", ".toml", ".cfg", ".ini", ".bat", ".sh",
+                   ".html", ".css", ".js"},  # html/css/js OK for templates/static
+        "cpp": {".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx",
+                ".cmake", ".md", ".txt", ".yaml", ".yml", ".json"},
+        "csharp": {".cs", ".csproj", ".sln", ".xaml", ".cshtml",
+                   ".md", ".txt", ".yaml", ".yml", ".json"},
+        "go": {".go", ".mod", ".sum", ".md", ".txt", ".yaml", ".yml", ".json"},
+        "rust": {".rs", ".toml", ".md", ".txt", ".yaml", ".yml", ".json"},
+        "java": {".java", ".kt", ".groovy", ".gradle", ".xml",
+                 ".md", ".txt", ".yaml", ".yml", ".json"},
+        "typescript": {".ts", ".tsx", ".js", ".jsx", ".json", ".html", ".css",
+                       ".md", ".txt", ".yaml", ".yml"},
+    }
+
+    # Files whose basename matches these patterns are scratchpad/temp files
+    # the agent should NOT be writing — they accumulate sprawl. take_note
+    # is the right place for scratch thinking.
+    TEMP_FILE_PATTERNS = (
+        re.compile(r"^_?temp[._].*$", re.IGNORECASE),
+        re.compile(r"^temp_.*$", re.IGNORECASE),
+        re.compile(r"^_temp_.*$", re.IGNORECASE),
+        re.compile(r"^scratch[._].*$", re.IGNORECASE),
+        re.compile(r"^scratch_.*$", re.IGNORECASE),
+        re.compile(r"^foo[._].*$", re.IGNORECASE),
+        re.compile(r"^bar[._].*$", re.IGNORECASE),
+        re.compile(r"^.*\.bak$", re.IGNORECASE),
+        re.compile(r"^.*\.orig$", re.IGNORECASE),
+    )
+
+    # Directories whose names indicate temp/scratch — entire subtree is banned.
+    TEMP_DIR_NAMES = frozenset({"_temp", "temp", "scratch", "tmp", "_tmp"})
+
     def __init__(self, project_dir: Path, permissions: Dict[str, Any],
                  action_filter: Optional[List[str]] = None,
-                 agent_slug: str = ''):
+                 agent_slug: str = '',
+                 language: str = ''):
         self.project_dir = Path(project_dir).resolve()
         self.permissions = permissions
+        self._language = (language or '').lower().strip()
         # E-16: optional whitelist of allowed action names for this agent
         self._action_filter: Optional[frozenset] = (
             frozenset(action_filter) if action_filter else None
@@ -618,16 +657,20 @@ class AgentExecutor:
                     ),
                 }
 
-            # ── HARD: tests must NOT live inside src/ ──────────────────────
+            # ── HARD: tests must NOT live inside src/ OR at root test/ ────
             # Caught the actual Pong-run sprawl: src/test/, src/tests/,
-            # src/test_*.py, src/paddle_tests.py. Tests belong in tests/.
+            # src/test_*.py, src/paddle_tests.py, AND test/ (singular) at
+            # project root. Only tests/ (plural) at root is canonical.
             _rel_norm = rel_path.replace("\\", "/").lower()
             _basename_lc = full_path_check.name.lower()
-            if _rel_norm.startswith("src/") and (
-                "/test/" in "/" + _rel_norm or "/tests/" in "/" + _rel_norm
-                or _basename_lc.startswith("test_")
+            _looks_like_test = (
+                _basename_lc.startswith("test_")
                 or _basename_lc.endswith("_test.py")
                 or _basename_lc.endswith("_tests.py")
+            )
+            if _rel_norm.startswith("src/") and (
+                "/test/" in "/" + _rel_norm or "/tests/" in "/" + _rel_norm
+                or _looks_like_test
             ):
                 return {
                     "success": False,
@@ -637,6 +680,69 @@ class AgentExecutor:
                         f"tests/{full_path_check.name}."
                     ),
                 }
+            if _rel_norm.startswith("test/"):
+                # Singular test/ at project root — wrong. Canonical is tests/.
+                return {
+                    "success": False,
+                    "message": (
+                        f"ACTION: write_file {rel_path} — DENIED (root-level "
+                        f"test/ directory is non-canonical; use tests/ "
+                        f"(plural)). Rewrite to "
+                        f"tests/{rel_path[len('test/'):]}."
+                    ),
+                }
+
+            # ── HARD: temp/scratch files banned ──────────────────────────
+            # Caught the Pong sprawl: src/_temp/, src/temp_game.py,
+            # src/_temp_game.py, src/temp.cpp, src/temp.txt. The agent has
+            # take_note for scratchpad thinking; temp files leak into the
+            # repo and never get cleaned up.
+            _path_parts = [p.lower() for p in
+                            full_path_check.relative_to(self.project_dir).parts]
+            for _part in _path_parts:
+                if _part in self.TEMP_DIR_NAMES:
+                    return {
+                        "success": False,
+                        "message": (
+                            f"ACTION: write_file {rel_path} — DENIED "
+                            f"(directory {_part!r} is a temp/scratch path). "
+                            f"Use take_note for scratchpad thinking, or "
+                            f"write to the canonical location directly."
+                        ),
+                    }
+            for _pat in self.TEMP_FILE_PATTERNS:
+                if _pat.match(_basename_lc):
+                    return {
+                        "success": False,
+                        "message": (
+                            f"ACTION: write_file {rel_path} — DENIED "
+                            f"(filename matches temp/scratch pattern). "
+                            f"Use take_note for scratch thinking. If this "
+                            f"is real code, rename to a meaningful "
+                            f"name first."
+                        ),
+                    }
+
+            # ── HARD: language allowlist ─────────────────────────────────
+            # Caught the Pong sprawl: src/main.cpp, src/temp.cpp in a
+            # Python project. If the project has a detected language,
+            # writes outside its extension allowlist are rejected.
+            if self._language and self._language in self.LANGUAGE_EXTENSIONS:
+                _allowed_exts = self.LANGUAGE_EXTENSIONS[self._language]
+                _suffix = full_path_check.suffix.lower()
+                if _suffix and _suffix not in _allowed_exts:
+                    return {
+                        "success": False,
+                        "message": (
+                            f"ACTION: write_file {rel_path} — DENIED "
+                            f"(file extension {_suffix!r} is outside the "
+                            f"allowlist for language={self._language!r}). "
+                            f"This is a {self._language} project; do not "
+                            f"create files in other languages. Allowed "
+                            f"extensions: "
+                            f"{', '.join(sorted(_allowed_exts))}."
+                        ),
+                    }
 
             # ── Basename collision: hard-fail unless legitimate or ack'd ──
             # Caught the Pong sprawl: 3 ball.py, paddle code in 7 places.
@@ -660,6 +766,33 @@ class AgentExecutor:
             _skip_basename_check = (
                 _basename_lc in _auto_allowed_basenames or _is_test_mirror
             )
+
+            # Special case: __init__.py is normally auto-allowed (legitimate
+            # repetition), but NOT when a sibling <dir>.py already exists at
+            # the parent — that's the file that *creates* a colliding
+            # subpackage (src/paddle.py + src/paddle/__init__.py). Block.
+            if (_basename_lc == "__init__.py"
+                    and full_path_check.parent != self.project_dir.resolve()):
+                _pkg_stem = full_path_check.parent.name
+                _grandparent = full_path_check.parent.parent
+                for _ext in (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs"):
+                    _sib = _grandparent / f"{_pkg_stem}{_ext}"
+                    if _sib.is_file():
+                        _rel_sib = _sib.relative_to(self.project_dir)
+                        return {
+                            "success": False,
+                            "message": (
+                                f"ACTION: write_file {rel_path} — DENIED "
+                                f"(creating __init__.py here would make "
+                                f"{_pkg_stem}/ a subpackage that collides "
+                                f"with existing sibling module "
+                                f"{str(_rel_sib).replace(chr(92),'/')!s}). "
+                                f"Either edit_file the existing module to "
+                                f"add what you wanted, or discard the "
+                                f"existing module first if the package "
+                                f"shape is the right one."
+                            ),
+                        }
 
             if not _skip_basename_check:
                 try:
@@ -771,28 +904,44 @@ class AgentExecutor:
                 except Exception:
                     pass  # best-effort
 
-            # ── HARD: subdir colliding with existing module file ─────────
-            # Caught the Pong sprawl: src/paddle.py + src/paddle/ as a
-            # subpackage. Block writing INTO a subdir whose name matches an
-            # existing .py / .ts / .js sibling.
+            # ── HARD: ANY ancestor dir collides with sibling module ──────
+            # Walks every directory between project root and the file's
+            # parent. For each ancestor dir <ancestor_name>, checks if
+            # <grandparent>/<ancestor_name>.<ext> exists. Catches both:
+            #   • write src/paddle/x.py while src/paddle.py exists
+            #   • write src/game/components/enemy.py while src/game.py exists
+            # The previous version only checked the immediate parent and
+            # missed nested writes once a __init__.py created the subdir.
             try:
-                _parent = full_path_check.parent
-                _stem = _parent.name
-                if _parent != self.project_dir.resolve():
-                    _grandparent = _parent.parent
+                _project_root = self.project_dir.resolve()
+                _ancestor = full_path_check.parent
+                while _ancestor != _project_root and _ancestor.parent != _ancestor:
+                    _stem = _ancestor.name
+                    _grandparent = _ancestor.parent
                     for _ext in (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs"):
                         _sibling = _grandparent / f"{_stem}{_ext}"
                         if _sibling.is_file():
-                            _rel_sib = _sibling.relative_to(self.project_dir)
+                            _rel_sib = str(
+                                _sibling.relative_to(self.project_dir)
+                            ).replace("\\", "/")
                             return {
                                 "success": False,
                                 "message": (
                                     f"ACTION: write_file {rel_path} — DENIED "
-                                    f"(subdir {_stem}/ collides with existing "
-                                    f"module {_rel_sib}). Either edit_file "
-                                    f"the module, or rename your target."
+                                    f"(directory {_stem}/ in this path "
+                                    f"collides with existing sibling module "
+                                    f"{_rel_sib}). The whole subtree under "
+                                    f"{_stem}/ is invalid while {_rel_sib} "
+                                    f"exists. Either edit_file {_rel_sib} to "
+                                    f"add what you need, or discard "
+                                    f"{_rel_sib} first if the package shape "
+                                    f"is correct."
                                 ),
                             }
+                    _ancestor = _ancestor.parent
+                    # Don't escape the project root
+                    if _project_root not in _ancestor.parents and _ancestor != _project_root:
+                        break
             except Exception:
                 pass
 

@@ -140,6 +140,34 @@ list AND isn't named by the task description, the executor will warn you.
 Treat that warning as a near-failure — the next action should fix the
 duplicate (discard_file the new one, edit the existing).
 
+WHEN write_file IS REJECTED FOR BASENAME COLLISION:
+The rejection message echoes (1) the existing file's content and (2)
+your submitted content. Your DEFAULT response is one of these — DO NOT
+invent a third path:
+
+  Option 1 (preferred, automatic):
+    {"action":"merge_files","params":{"target":"<existing path>",
+     "source":"<your rejected path>"}}
+    OR (if you only have content, no source file yet):
+    {"action":"merge_files","params":{"target":"<existing path>",
+     "new_content":"<the content you tried to write>"}}
+    The system AST-merges unique imports/defs/classes, dedupes overlap,
+    and discards the source. One call, done.
+
+  Option 2 (replace existing entirely):
+    {"action":"write_file","params":{"path":"<existing path>",
+     "content":"<your content>","overwrite":true}}
+
+  Option 3 (genuinely separate concerns — only if the existing file is
+  unrelated): first call read_file on the existing path to inspect it,
+  then re-issue write_file with acknowledge_duplicate=true and a
+  reason="<why these are different concerns>".
+
+NEVER respond to a basename-collision rejection by writing the same
+content to a third invented path. NEVER invent files like
+PaddleAI/Movement.py just because you can't write paddle.py — call
+merge_files instead.
+
 CRITICAL WORKFLOW — follow exactly:
 1. Read the task description carefully.
 2. EXPLORE FIRST: call list_files or read_file to understand the EXISTING codebase before making any changes.

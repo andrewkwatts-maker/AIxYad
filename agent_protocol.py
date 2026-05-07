@@ -279,9 +279,30 @@ class AgentProtocol:
         if _VIEW_ACTIONS_AVAILABLE and _ViewActionHandler:
             view_handler = _ViewActionHandler(project_dir=self.project_dir)
 
+        # Detect project language from the stored project goal so the
+        # executor can enforce a per-language extension allowlist.
+        _project_language = ""
+        try:
+            from automatica_db import get_project_setting
+            import sqlite3 as _sqlite3
+            _pdb_path = (self.project_dir / ".automatica" / "project.db")
+            if _pdb_path.is_file():
+                _conn = _sqlite3.connect(str(_pdb_path))
+                _conn.row_factory = _sqlite3.Row
+                try:
+                    _goal = get_project_setting(_conn, "project_goal", "") or ""
+                    if _goal:
+                        from run_autonomous import _detect_language
+                        _project_language = _detect_language(_goal)
+                finally:
+                    _conn.close()
+        except Exception:
+            pass  # best-effort
+
         self.executor = AgentExecutor(
             project_dir=self.project_dir,
             permissions=self.permissions,
+            language=_project_language,
         )
         if db_handler:
             self.executor.set_db_handler(db_handler, session_id=self.session_id)
@@ -677,23 +698,31 @@ class AgentProtocol:
 
                 if action == 'step_done':
                     # ── Stub-content guard ─────────────────────────────────
-                    # Caught the actual Pong-run failure mode: agent claimed
-                    # TASK-002 "Create basic game window" done with src/main.py
-                    # being just print('Hello, world!'). Scan files_changed
-                    # for obvious stubs and reject step_done if any match.
-                    _stub_files = self._detect_stub_files(
-                        params.get('files_changed', []) or [],
-                        task,
-                    )
+                    # Caught the Pong-run failure mode: agent claims done with
+                    # src/main.py being print('Hello, world!'). If the agent
+                    # omitted files_changed, derive it from action_log so
+                    # they can't bypass the guard by sending an empty list.
+                    _files_changed = params.get('files_changed', []) or []
+                    _derived_note = ""
+                    if not _files_changed:
+                        _files_changed = self._files_touched_from_log()
+                        if _files_changed:
+                            _derived_note = (
+                                " (derived from action history because "
+                                "files_changed was empty)"
+                            )
+                    _stub_files = self._detect_stub_files(_files_changed, task)
                     if _stub_files:
                         self.history.append({
                             'role': 'system',
                             'content': (
-                                f"STEP_DONE REJECTED: the following files are "
-                                f"stubs (print/pass/empty, no real implementation): "
-                                f"{', '.join(_stub_files)}. The task is not done. "
-                                f"Replace stub content with a real implementation, "
-                                f"then call step_done again."
+                                f"STEP_DONE REJECTED{_derived_note}: the "
+                                f"following files are stubs (print/pass/"
+                                f"empty/raise NotImplementedError, no real "
+                                f"implementation): {', '.join(_stub_files)}. "
+                                f"The task is not done. Replace stub content "
+                                f"with a real implementation, then call "
+                                f"step_done again."
                             ),
                         })
                         stop_batch = True
@@ -814,14 +843,60 @@ class AgentProtocol:
             'action_log': self.executor.get_log(),
         }
 
+    def _files_touched_from_log(self) -> list:
+        """Walk the executor's action_log and return paths of every file
+        successfully written / edited / merged into during this session.
+        Used as a fallback when the agent's step_done call omits
+        files_changed."""
+        log = []
+        try:
+            log = self.executor.get_log() or []
+        except Exception:
+            return []
+        path_actions = {
+            'write_file': ('path',),
+            'edit_file': ('path',),
+            'create_section': ('path',),
+            'replace_section': ('path',),
+            'insert_line': ('path',),
+            'remove_section': ('path',),
+            'edit_section': ('path',),
+            'merge_files': ('target', 'dest', 'dst'),
+            'copy_file': ('dst', 'dest', 'destination'),
+        }
+        out: list = []
+        seen: set = set()
+        for entry in log:
+            if not isinstance(entry, dict):
+                continue
+            if not entry.get('success', False):
+                continue
+            keys = path_actions.get(entry.get('action', ''))
+            if not keys:
+                continue
+            params = entry.get('params') or {}
+            for k in keys:
+                p = params.get(k)
+                if isinstance(p, str) and p:
+                    norm = p.replace('\\', '/').lstrip('./')
+                    if norm not in seen:
+                        seen.add(norm)
+                        out.append(norm)
+                    break
+        return out
+
     def _detect_stub_files(self, files_changed: list, task: dict) -> list:
         """Return paths of stub files among files_changed.
 
-        Stub = file whose content is so trivial it can't possibly satisfy a
-        non-doc task: only a print()/pass/single string literal/empty body.
+        AST-based: a Python file is a stub if its top-level body contains no
+        meaningful definition (FunctionDef / ClassDef / non-trivial Assign /
+        non-trivial expression). Auto-generated module docstrings, GUID
+        comments, and `if __name__ == "__main__":` blocks whose body is just
+        print/pass/ellipsis don't count as substance. Falls back to a
+        line-count heuristic for non-Python or unparseable files.
+
         Pure-doc tasks (titles like "Add docstrings…") are exempt.
         """
-        # Documentation-only tasks legitimately produce small files; skip the check.
         title = (task.get('title') or '').lower()
         if any(kw in title for kw in ('docstring', 'documentation', 'readme',
                                       'license', 'comment')):
@@ -832,8 +907,8 @@ class AgentProtocol:
             if not isinstance(entry, str) or not entry:
                 continue
             rel = entry.replace('\\', '/').lstrip('./')
-            # Only scrutinize source files we'd treat as real implementations.
-            if not rel.endswith(('.py', '.ts', '.tsx', '.js', '.jsx', '.go', '.rs', '.java', '.c', '.cpp')):
+            if not rel.endswith(('.py', '.ts', '.tsx', '.js', '.jsx', '.go',
+                                 '.rs', '.java', '.c', '.cpp')):
                 continue
             try:
                 fp = (self.project_dir / rel).resolve()
@@ -843,52 +918,124 @@ class AgentProtocol:
             except Exception:
                 continue
 
-            # Strip GUID line + comments + blank lines, then look at substance.
-            substantive = []
-            for line in txt.splitlines():
-                s = line.strip()
-                if not s:
-                    continue
-                if s.startswith(('#', '//')):
-                    continue
-                substantive.append(s)
-
-            if not substantive:
-                stubs.append(rel)
-                continue
-
-            # Joined non-comment body, lower-cased for pattern matching.
-            body = '\n'.join(substantive)
-            body_lc = body.lower()
-
-            # Telltale stubs:
-            #   • single print() call
-            #   • single pass / ... / "TODO"
-            #   • single string literal (module docstring with no code)
-            stub_patterns = (
-                r"^print\([^)]*\)\s*$",
-                r"^pass\s*$",
-                r"^\.\.\.\s*$",
-                r"^['\"][^'\"]*['\"]\s*$",  # bare string literal
-                r"^todo\b",
-                r"^raise\s+notimplementederror",
-            )
-            if len(substantive) <= 2:
-                if any(re.match(p, body_lc) for p in stub_patterns):
+            if rel.endswith('.py'):
+                if self._py_is_stub(txt):
+                    stubs.append(rel)
+            else:
+                # Non-Python fallback: strip comments + blanks; if the result
+                # has no `function` / `class` / `=` / `{` and is short, stub.
+                substantive = [s.strip() for s in txt.splitlines()
+                               if s.strip() and not s.strip().startswith(('//', '#', '/*'))]
+                if not substantive:
                     stubs.append(rel)
                     continue
-
-            # Heuristic: if body has NO def / class / function / =, it's
-            # almost certainly a stub regardless of length.
-            if (len(substantive) <= 5
-                    and 'def ' not in body
-                    and 'class ' not in body
-                    and 'function ' not in body
-                    and '=' not in body
-                    and 'import ' not in body):
-                stubs.append(rel)
+                body = '\n'.join(substantive)
+                if (len(substantive) <= 5
+                        and 'function' not in body and 'class ' not in body
+                        and 'export' not in body and '=' not in body
+                        and 'import ' not in body and '{' not in body):
+                    stubs.append(rel)
 
         return stubs
+
+    def _py_is_stub(self, source: str) -> bool:
+        """AST-based stub check for Python files. Returns True if the file
+        is meaningfully empty (no real implementation)."""
+        import ast as _ast
+        try:
+            tree = _ast.parse(source)
+        except Exception:
+            # Unparseable Python is BROKEN, not stub — let it through; the
+            # py_compile smoke check catches the syntax error separately.
+            return False
+
+        def _is_trivial_body(body) -> bool:
+            """A body that is only pass / ... / single print() / single
+            string literal."""
+            if not body:
+                return True
+            if len(body) > 1:
+                return False
+            n = body[0]
+            if isinstance(n, _ast.Pass):
+                return True
+            if isinstance(n, _ast.Expr):
+                v = n.value
+                if isinstance(v, _ast.Constant):  # string, ellipsis, number literal
+                    return True
+                if isinstance(v, _ast.Call) and isinstance(v.func, _ast.Name) \
+                        and v.func.id in ('print', 'breakpoint', 'exit', 'quit'):
+                    return True
+            if isinstance(n, _ast.Raise):
+                exc = n.exc
+                if isinstance(exc, _ast.Call) and isinstance(exc.func, _ast.Name) \
+                        and exc.func.id == 'NotImplementedError':
+                    return True
+                if isinstance(exc, _ast.Name) and exc.id == 'NotImplementedError':
+                    return True
+            return False
+
+        # Walk top-level body. Strip module docstring (first Expr-Constant-str).
+        body = list(tree.body)
+        if (body and isinstance(body[0], _ast.Expr)
+                and isinstance(body[0].value, _ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            body = body[1:]
+
+        # Look for any "real" top-level node:
+        #   FunctionDef / AsyncFunctionDef / ClassDef = real
+        #   Import / ImportFrom = scaffolding only — doesn't make a stub real
+        #   Assign to a name OTHER than __all__/__version__ = real
+        #   AugAssign = real
+        #   If/Try/With/For/While containing a non-trivial body = real
+        #   `if __name__ == "__main__":` with trivial body = NOT real
+        for node in body:
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                return False
+            if isinstance(node, (_ast.Import, _ast.ImportFrom)):
+                continue
+            if isinstance(node, _ast.Assign):
+                trivial_lhs_names = {'__all__', '__version__', '__author__',
+                                     '__email__', '__doc__'}
+                lhs = [t.id for t in node.targets if isinstance(t, _ast.Name)]
+                if any(n not in trivial_lhs_names for n in lhs):
+                    return False
+                continue
+            if isinstance(node, _ast.AugAssign):
+                return False
+            if isinstance(node, _ast.If):
+                # Special-case `if __name__ == "__main__":` — the canonical
+                # entry-point pattern. Real iff its body is non-trivial.
+                test = node.test
+                if (isinstance(test, _ast.Compare)
+                        and isinstance(test.left, _ast.Name)
+                        and test.left.id == '__name__'):
+                    if _is_trivial_body(node.body):
+                        continue  # __main__ block with print/pass — still stub
+                    return False
+                if not _is_trivial_body(node.body):
+                    return False
+                continue
+            if isinstance(node, (_ast.Try, _ast.With, _ast.For, _ast.While,
+                                  _ast.AsyncWith, _ast.AsyncFor)):
+                if not _is_trivial_body(node.body):
+                    return False
+                continue
+            if isinstance(node, _ast.Expr):
+                # Bare top-level expression. Trivial print()/string literal = stub.
+                if _is_trivial_body([node]):
+                    continue
+                return False  # call to real function, etc.
+            if isinstance(node, _ast.Raise):
+                # Top-level raise. raise NotImplementedError = stub.
+                if _is_trivial_body([node]):
+                    continue
+                return False
+            # Anything else (Global, Nonlocal, etc.) — treat as not-stub
+            return False
+
+        # No "real" nodes found.
+        return True
 
     def _confirm_done(self, task: dict, request: dict, done_response: dict, iteration: int) -> str:
         """S3-W02: Confirmation round before accepting step_done.

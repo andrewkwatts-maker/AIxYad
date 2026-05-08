@@ -178,24 +178,46 @@ and you don't know where X lives, search for it.
 # (treat as step_done). The second means "I cannot proceed" (treat as
 # need_help → WF-4 classifies as refusal).
 _VERIFIED_COMPLETE_PHRASES = [
+    # Pre-existing implementation
     "already done", "already complete", "already implemented", "already in place",
     "already fixed", "already present", "already wired",
+    "existing files already", "existing implementation already",
+    # No-op
     "no changes needed", "no changes required", "no action needed",
     "no files needed", "no new files needed",
-    "satisfy ", "satisfies ", "meet the criteria", "meets the criteria",
+    # Acceptance-criteria assertions (the most common Claude pattern)
+    "satisfy ", "satisfies ", "satisfied",
+    "meet the criteria", "meets the criteria",
+    "criteria are met", "criteria are now met", "all criteria are met",
+    "all acceptance criteria", "acceptance criteria are met",
+    "acceptance criteria are now met", "are now met",
+    # Test/build success signals
+    "all tests pass", "tests pass", "tests passing", "build passes",
+    "build succeeds", "build successful",
     "task appears complete", "appears complete from",
-    "existing files already", "existing implementation already",
+    # Explicit ticks
+    "✅", "[x] ",  # checkbox / unicode tick
 ]
 _BLOCKED_PHRASES = [
+    # Inability
     "could not", "cannot proceed", "cannot complete", "cannot implement",
     "cannot do this", "cannot do that", "can't proceed", "can't complete",
     "unable to proceed", "unable to complete", "unable to implement",
+    # Pre-flight excuses
     "would need", "i would need to",
     "requires more", "requires additional",
     "i don't have", "i do not have",
     "not enough information", "not enough context",
     "have not inspected", "haven't inspected",
     "need to know", "need to inspect",
+    # Explicit refusal-to-execute (Claude policy reminders)
+    "not executing", "i am not executing", "am not executing",
+    "not performing", "i am not performing",
+    "reminder forbidding", "reminder prohibiting",
+    "due to the reminder", "due to system reminder",
+    "policy reminder", "safety reminder",
+    "i will not perform", "i will not execute",
+    "decline to ", "declined to ",
 ]
 
 
@@ -396,7 +418,14 @@ def _strip_bookkeeping(porcelain: str) -> str:
 
 
 def _git_diff_summary(cwd: str | None) -> tuple[bool, str]:
-    """Return (any_meaningful_changes, short_diff_stat) for the repo at *cwd*.
+    """Return (any_meaningful_changes, fingerprint) for the repo at *cwd*.
+
+    The fingerprint is a SHA-1 of the FULL filtered porcelain output plus
+    its line count — so pre/post comparison detects ANY add/remove/modify
+    even when the dirt-list is huge. Truncated string compares (the prior
+    bug) couldn't see changes past the first 400 chars; with Nova3D's
+    1500+ lines of pre-existing dirt that meant most real edits looked
+    like no-ops.
 
     Bookkeeping paths (build outputs, .claude/.automatica/.vscode, autoclaude
     scratch logs) are stripped so Claude can't fake task completion by leaving
@@ -407,6 +436,7 @@ def _git_diff_summary(cwd: str | None) -> tuple[bool, str]:
     if not cwd:
         return (False, "")
     try:
+        import hashlib
         diff = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True, text=True, cwd=cwd, timeout=15,
@@ -414,7 +444,14 @@ def _git_diff_summary(cwd: str | None) -> tuple[bool, str]:
         if diff.returncode != 0:
             return (False, "")
         filtered = _strip_bookkeeping(diff.stdout.strip())
-        return (bool(filtered), filtered[:400])
+        if not filtered:
+            return (False, "")
+        # Fingerprint = SHA1(full filtered output) + line count.
+        # Two snapshots compare equal IFF every line is identical.
+        h = hashlib.sha1(filtered.encode("utf-8", errors="replace")).hexdigest()[:12]
+        n = filtered.count("\n") + 1
+        fingerprint = f"{h}/{n}lines"
+        return (True, fingerprint)
     except Exception:
         return (False, "")
 

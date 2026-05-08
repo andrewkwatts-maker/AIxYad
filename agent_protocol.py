@@ -583,6 +583,23 @@ class AgentProtocol:
             pass
 
         start_time = time.time()
+
+        # Three-phase mode for code-heavy tasks: pseudocode plan -> real
+        # code in markdown fences -> structured JSON action batch. Reduces
+        # JSON-escape failures on write_file content (the dominant failure
+        # mode for small models) by separating design from syntax. Falls
+        # through to the iterative loop on hard failure.
+        if self._should_use_three_phase(task):
+            try:
+                result_3p = self._run_three_phase(task, context, instructions, start_time)
+                if result_3p is not None:
+                    return result_3p
+            except Exception as _3p_exc:
+                # Defensive — never let 3-phase crashes prevent fallback.
+                self.history.append({
+                    'role': 'system',
+                    'content': f"three-phase mode crashed: {_3p_exc} — falling back to iterative loop"
+                })
         # Track every successful action outside of history so it survives history trimming.
         # Injected into every request as task['_completed'] so the model doesn't repeat work.
         completed_steps: list = []
@@ -842,6 +859,420 @@ class AgentProtocol:
             'duration': time.time() - start_time,
             'action_log': self.executor.get_log(),
         }
+
+    # ── 3-PHASE TASK EXECUTION ───────────────────────────────────────────
+    # pseudocode plan -> real code (markdown fenced) -> structured JSON
+    # actions. Phase 2 has syntax check + retry. Phase 3 has retry that
+    # preserves phase 1+2 across attempts so info isn't lost. Final fallback:
+    # deterministic parse of phase 2 markdown into action JSON. Selected
+    # for code-writing tasks of complexity >= 3 (small/trivial tasks stay
+    # on the single-iteration loop where the overhead isn't worth it).
+
+    _3P_DESIGN_VERBS = (
+        "implement", "create", "build", "write", "add", "refactor", "extract",
+        "merge", "consolidate", "scaffold", "set up", "fix", "polish",
+        "rewrite", "split", "rename", "move",
+    )
+
+    def _should_use_three_phase(self, task: dict) -> bool:
+        """Pick 3-phase mode for substantial code-writing tasks. Small/
+        utility tasks (run a command, single docstring add) stay on the
+        cheaper iterative loop."""
+        # Allow per-provider opt-out via adapter config.
+        cfg = getattr(self.adapter, 'config', {}) or {}
+        if not cfg.get('use_three_phase', True):
+            return False
+        try:
+            cx = int(task.get('complexity', 3))
+        except (TypeError, ValueError):
+            cx = 3
+        if cx < 3:
+            return False
+        title_lc = (task.get('title') or '').lower()
+        desc_lc = (task.get('description') or '').lower()
+        text = title_lc + " " + desc_lc
+        if any(v in text for v in self._3P_DESIGN_VERBS):
+            return True
+        # Fallback heuristic: long descriptions usually mean substantial work.
+        return len(desc_lc) > 200
+
+    _MD_FILE_HEADER_RE = re.compile(r"^##\s*File:\s*(.+?)\s*$", re.MULTILINE)
+    _MD_RUN_HEADER_RE = re.compile(r"^##\s*Run:\s*(.+?)\s*$", re.MULTILINE)
+    _MD_DONE_HEADER_RE = re.compile(r"^##\s*Done:\s*(.*?)$", re.MULTILINE)
+    _MD_FENCE_RE = re.compile(
+        r"^```[A-Za-z0-9_-]*\s*\n(.*?)\n```", re.MULTILINE | re.DOTALL
+    )
+
+    def _parse_phase2_markdown(self, md: str) -> list:
+        """Deterministically parse phase-2 markdown into a list of action
+        dicts. Reads `## File: <path>` headers + their following fenced code
+        blocks, `## Run: <cmd>` headers, and a single `## Done: <summary>`
+        line. Returns a list ready for executor.execute(). Empty list if
+        parsing yields nothing."""
+        actions: list = []
+        # 1) Files: walk by scanning each ## File: header and grabbing the
+        #    *next* fenced block.
+        for m in self._MD_FILE_HEADER_RE.finditer(md):
+            path = (m.group(1) or "").strip().strip("`'\"")
+            if not path:
+                continue
+            after = md[m.end():]
+            fence = self._MD_FENCE_RE.search(after)
+            if not fence:
+                continue
+            content = fence.group(1)
+            actions.append({
+                'action': 'write_file',
+                'params': {'path': path, 'content': content, 'overwrite': True},
+            })
+        # 2) Run commands
+        for m in self._MD_RUN_HEADER_RE.finditer(md):
+            cmd = (m.group(1) or "").strip().strip("`")
+            if cmd:
+                actions.append({
+                    'action': 'run_command',
+                    'params': {'command': cmd},
+                })
+        # 3) Done — only the LAST one wins, and we always append at the end.
+        done_summary = ""
+        for m in self._MD_DONE_HEADER_RE.finditer(md):
+            done_summary = (m.group(1) or "").strip()
+        if done_summary:
+            actions.append({
+                'action': 'step_done',
+                'params': {'summary': done_summary},
+            })
+        return actions
+
+    def _3p_extract_python_blocks(self, md: str) -> list:
+        """Return [(path, code), ...] for every Python file declared in the
+        phase-2 markdown. Used for syntax-check before phase 3."""
+        out: list = []
+        for m in self._MD_FILE_HEADER_RE.finditer(md):
+            path = (m.group(1) or "").strip().strip("`'\"")
+            if not path.endswith(".py"):
+                continue
+            after = md[m.end():]
+            fence = self._MD_FENCE_RE.search(after)
+            if not fence:
+                continue
+            out.append((path, fence.group(1)))
+        return out
+
+    def _3p_syntax_check(self, py_blocks: list) -> list:
+        """Return [(path, error_message), ...] for any block that fails
+        ast.parse. Empty list = all good."""
+        import ast as _ast
+        errs: list = []
+        for path, code in py_blocks:
+            try:
+                _ast.parse(code)
+            except SyntaxError as exc:
+                errs.append((path, f"Line {exc.lineno}: {exc.msg}"))
+            except Exception as exc:
+                errs.append((path, str(exc)))
+        return errs
+
+    def _run_three_phase(self, task: dict, context: dict,
+                            instructions: dict, start_time: float):
+        """Three-phase task execution:
+
+        1. Plan (free text)        — design, no code, no JSON
+        2. Real code (markdown)    — fenced code blocks per file; AST-checked
+        3. Structured JSON         — model converts to action batch
+
+        Each phase's input includes the prior phases' outputs so info isn't
+        lost across retries. Final fallback if phase 3 fails: deterministic
+        parse of phase 2 markdown.
+
+        Returns the terminal result dict on success/failure, or None to
+        signal the caller should fall through to the iterative loop.
+        """
+        # Build a minimal context summary for the prompts (the full prompt
+        # is too large for plain `generate` calls — we pull only essentials).
+        title = task.get('title', '') or ''
+        desc = task.get('description', '') or ''
+        if isinstance(desc, list):
+            desc = "\n".join(str(s) for s in desc)
+        existing_files = context.get('wiki_summary') or []
+        files_blob = "\n".join(
+            f"  {f.get('path','')}" for f in existing_files[:25]
+        ) or "  (project is empty)"
+        standards_text = ""
+        try:
+            std_text = (context.get('project_standards') or {}).get('text') or ''
+            if std_text:
+                # Just the first 1500 chars — we don't want to swamp the
+                # plan-only call with the full standards doc.
+                standards_text = std_text[:1500]
+        except Exception:
+            pass
+
+        # ── Phase 1: pseudocode plan ─────────────────────────────────────
+        plan_prompt = (
+            "You are an AI software engineer about to implement a task. "
+            "Before touching any code, write a brief plan.\n\n"
+            f"=== Task ===\n{title}\n\n{desc}\n\n"
+            f"=== Existing project files (top 25) ===\n{files_blob}\n\n"
+            + (f"=== Project standards (excerpt) ===\n{standards_text}\n\n" if standards_text else "")
+            + "Write a numbered plan (5-10 lines) covering:\n"
+            "  • What new files to create (full paths)\n"
+            "  • What existing files to modify\n"
+            "  • Order of operations\n"
+            "  • How you'll verify it works (test/run command)\n\n"
+            "Plain English. No code blocks. No JSON. No markdown fences. "
+            "Just numbered prose so a junior could implement from it."
+        )
+        try:
+            plan_text = self.adapter.generate({
+                'prompt': plan_prompt, 'max_tokens': 800, 'temperature': 0.2,
+            })
+        except Exception as exc:
+            self.history.append({'role': 'system',
+                'content': f"3p phase 1 (plan) failed: {exc}"})
+            return None  # fall through
+        plan_text = (plan_text or "").strip()
+        if not plan_text or plan_text.startswith("Error:"):
+            self.history.append({'role': 'system',
+                'content': "3p phase 1 returned empty / errored — falling back to iterative loop"})
+            return None
+        if self.log_dir:
+            self._write_log(0, '3p_phase1_plan', {'plan': plan_text})
+
+        # ── Phase 2: real code in markdown — with syntax-check retry ─────
+        max_phase2 = 2
+        last_syntax_errs: list = []
+        code_md = ""
+        for attempt in range(max_phase2):
+            err_block = ""
+            if last_syntax_errs:
+                err_block = "\n\nYour previous attempt had syntax errors:\n" + "\n".join(
+                    f"  • {p}: {e}" for p, e in last_syntax_errs
+                ) + "\n\nFix the errors and re-emit the FULL code for each file."
+
+            code_prompt = (
+                f"You wrote this plan:\n\n{plan_text}\n\n"
+                f"Now implement it. For each file, write the full code in this exact format:\n\n"
+                f"## File: <relative path>\n"
+                f"```<lang>\n"
+                f"<code>\n"
+                f"```\n\n"
+                f"Multiple files = multiple `## File:` blocks. Use the exact `## File:` "
+                f"header (not `### File` or `# File`). Use markdown code fences with the "
+                f"language tag. Write the COMPLETE file content — no `...` placeholders.\n\n"
+                f"To run a verification command, write:\n"
+                f"## Run: <command>\n\n"
+                f"When the task is complete, write the final line:\n"
+                f"## Done: <one-line summary of what was done>\n\n"
+                f"Write code as you would in an editor. Don't worry about JSON escaping. "
+                f"This output is markdown, not JSON.{err_block}"
+            )
+            try:
+                code_md = self.adapter.generate({
+                    'prompt': code_prompt, 'max_tokens': 3000, 'temperature': 0.1,
+                })
+            except Exception as exc:
+                self.history.append({'role': 'system',
+                    'content': f"3p phase 2 attempt {attempt+1} failed: {exc}"})
+                return None
+            code_md = (code_md or "").strip()
+            if not code_md:
+                self.history.append({'role': 'system',
+                    'content': "3p phase 2 returned empty"})
+                return None
+            # Syntax-check Python blocks
+            py_blocks = self._3p_extract_python_blocks(code_md)
+            last_syntax_errs = self._3p_syntax_check(py_blocks)
+            if not last_syntax_errs:
+                break
+        if self.log_dir:
+            self._write_log(0, '3p_phase2_code', {
+                'code_md_preview': code_md[:1500],
+                'syntax_errs': last_syntax_errs,
+            })
+
+        # If syntax check still fails after retries, fall back to iterative
+        # loop (don't ship broken code via deterministic parse).
+        if last_syntax_errs:
+            self.history.append({'role': 'system',
+                'content': (f"3p phase 2 syntax errors persist after {max_phase2} "
+                            f"attempts: {last_syntax_errs} — falling back to iterative loop")})
+            return None
+
+        # ── Phase 3: structured JSON action batch — with retry ──────────
+        max_phase3 = 2
+        last_phase3_err = ""
+        actions_iter: list = []
+        for attempt in range(max_phase3):
+            err_block = ""
+            if last_phase3_err:
+                err_block = (
+                    f"\n\nYour previous attempt produced invalid JSON:\n"
+                    f"  {last_phase3_err}\n\nDO NOT lose the plan or code above. "
+                    f"Re-emit the JSON action batch carefully."
+                )
+            json_prompt = (
+                f"Plan:\n{plan_text}\n\n"
+                f"Implementation:\n{code_md}\n\n"
+                f"Convert the implementation to a JSON action batch. Output exactly "
+                f"this shape and nothing else:\n\n"
+                f'{{"actions": [\n'
+                f'  {{"action": "write_file", "params": {{"path": "...", "content": "...", "overwrite": true}}}},\n'
+                f'  {{"action": "run_command", "params": {{"command": "..."}}}},\n'
+                f'  {{"action": "step_done", "params": {{"summary": "..."}}}}\n'
+                f"]}}\n\n"
+                f"Rules:\n"
+                f"  • Every `## File: <path>` becomes a write_file action.\n"
+                f"  • Every `## Run: <cmd>` becomes a run_command action.\n"
+                f"  • The `## Done:` line becomes step_done at the END.\n"
+                f"  • For Python content: use single quotes inside the code so the "
+                f"outer JSON double quotes are not broken.\n"
+                f"  • Output ONLY the JSON object. No prose, no markdown fences."
+                f"{err_block}"
+            )
+            request = self.build_request(task, context, instructions, attempt)
+            request['_three_phase_override_prompt'] = json_prompt
+            # Use send() to leverage the adapter's JSON-shape parser.
+            # We pass the override via a custom field; adapters that respect
+            # it use it directly. Otherwise fallback to building from md.
+            try:
+                response = self.adapter.send(request)
+            except Exception as exc:
+                last_phase3_err = f"adapter error: {exc}"
+                continue
+            batch = response.get('actions')
+            if isinstance(batch, list) and batch:
+                actions_iter = batch
+                break
+            single_action = response.get('action')
+            if single_action and single_action != 'need_help':
+                actions_iter = [{
+                    'action': single_action,
+                    'params': response.get('params', {}) or {},
+                }]
+                break
+            last_phase3_err = (response.get('reasoning')
+                                or response.get('params', {}).get('reason')
+                                or 'no actions returned')
+
+        # Fallback: deterministic parse of phase 2 markdown
+        if not actions_iter:
+            self.history.append({'role': 'system',
+                'content': (f"3p phase 3 failed after {max_phase3} attempts "
+                            f"({last_phase3_err}) — using deterministic markdown parse")})
+            actions_iter = self._parse_phase2_markdown(code_md)
+            if not actions_iter:
+                self.history.append({'role': 'system',
+                    'content': "3p deterministic parse yielded no actions — falling back to iterative loop"})
+                return None
+
+        if self.log_dir:
+            self._write_log(0, '3p_phase3_actions', {
+                'actions_count': len(actions_iter),
+                'actions_preview': [a.get('action') for a in actions_iter[:10]],
+            })
+
+        # ── Execute the batch ───────────────────────────────────────────
+        # Mirror the inner-batch logic from _run_single_step but compressed
+        # to a single pass. Failure of any non-terminal action returns to
+        # the iterative loop with the failure context already in history.
+        from validation import validate_action
+        terminal_result = None
+        successful = 0
+        productive = 0
+        _PRODUCTIVE = {"write_file", "edit_file", "run_command", "run_script",
+                       "edit_section", "create_section", "replace_section",
+                       "insert_line", "remove_section", "rename_symbol",
+                       "merge_files"}
+        # Add a synthetic "what 3-phase produced" entry to history so the
+        # fallback iterative loop (if invoked) knows what's already been
+        # decided.
+        self.history.append({'role': 'assistant',
+            'content': f"[3-phase] plan + code generated; executing batch of {len(actions_iter)} action(s)"})
+
+        for sub_idx, sub in enumerate(actions_iter):
+            action = sub.get('action', 'need_help')
+            params = sub.get('params', {}) or {}
+
+            if action == 'step_done':
+                # Run the same stub guard that protects the iterative loop.
+                _files_changed = params.get('files_changed', []) or []
+                if not _files_changed:
+                    _files_changed = self._files_touched_from_log()
+                _stub_files = self._detect_stub_files(_files_changed, task)
+                if _stub_files:
+                    self.history.append({'role': 'system',
+                        'content': (f"3p step_done REJECTED: stub files {_stub_files}. "
+                                    f"Falling back to iterative loop to fix.")})
+                    return None  # iterative loop takes over
+                terminal_result = {
+                    'success': True,
+                    'summary': params.get('summary', f"3-phase complete: {title[:60]}"),
+                    'files_changed': params.get('files_changed', []),
+                    'iterations': 1,  # 3-phase counts as one round-trip
+                    'duration': time.time() - start_time,
+                    'action_log': self.executor.get_log(),
+                }
+                break
+
+            if action == 'need_help':
+                terminal_result = {
+                    'success': False,
+                    'reason': params.get('reason', 'need_help'),
+                    'iterations': 1,
+                    'duration': time.time() - start_time,
+                    'action_log': self.executor.get_log(),
+                }
+                break
+
+            # Validate and execute
+            validation = validate_action(action, params)
+            if validation and not validation.startswith("Unknown action"):
+                self.history.append({'role': 'system',
+                    'content': f"3p batch[{sub_idx}] PARAM ERROR ({action}): {validation}"})
+                # Falling back to iterative loop is safer than continuing
+                # with a half-applied batch.
+                return None
+
+            try:
+                result = self.executor.execute({
+                    'action': action, 'params': params, 'reasoning': '3-phase batch',
+                })
+            except Exception as exec_exc:
+                self.history.append({'role': 'system',
+                    'content': f"3p batch[{sub_idx}] {action} crashed: {exec_exc}"})
+                return None
+
+            self.history.append({'role': 'system',
+                'content': (f"3p batch[{sub_idx}] {action}: "
+                            f"{result.get('message', '')[:300]}")})
+            if not result.get('success', False):
+                # Half-applied batch — fall back to iterative loop with the
+                # failure context already injected. The iterative loop has
+                # better single-action recovery.
+                return None
+            successful += 1
+            if action in _PRODUCTIVE:
+                productive += 1
+
+        # If we executed everything but never hit step_done, return success
+        # if there was productive work (analogous to the implicit-step-done
+        # fallback in the iterative loop).
+        if terminal_result is None:
+            if productive >= 1 or successful >= 3:
+                terminal_result = {
+                    'success': True,
+                    'summary': f"3-phase implicit completion: {productive} productive, {successful} total actions",
+                    'files_changed': [],
+                    'iterations': 1,
+                    'duration': time.time() - start_time,
+                    'action_log': self.executor.get_log(),
+                }
+            else:
+                # Insufficient progress — let iterative loop take over.
+                return None
+
+        return terminal_result
 
     def _files_touched_from_log(self) -> list:
         """Walk the executor's action_log and return paths of every file

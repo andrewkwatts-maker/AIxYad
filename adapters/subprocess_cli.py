@@ -145,14 +145,32 @@ positive and proceed.
 The task is to MAKE the change, not to point out what should change. Reading
 a file does NOT prevent you from then editing it — that is the normal workflow.
 
-When you finish, print a short plain-text summary (1-3 lines) of:
-  - which files you modified or created, and
-  - whether the task is complete or what remains.
+CRITICAL — what counts as DONE in this loop:
+  YOUR INVOCATION IS GRADED BY GIT DIFF. If you exit without modifying any
+  files, you have NOT completed the task — even if your reasoning is correct.
 
-Do not ask for clarification. If something is ambiguous, make the most
-reasonable senior-engineer choice and proceed. If the task is genuinely
-impossible (a file cannot be created, a tool is missing), say so explicitly —
-but only after you have attempted the work.
+  - Listing "files I would need to read" is FAILURE. Read them, then edit.
+  - Returning a JSON plan of what should be done is FAILURE. Do it.
+  - "I would need to inspect X" / "I need to know Y" is FAILURE. Use Read
+    on X right now in this invocation, get Y from the file, then proceed.
+  - "Without reading the actual current implementations..." is the wrong
+    framing — you HAVE filesystem read access; use it without narrating.
+
+The pattern:
+  1. Read the files you need (Glob, Grep, Read — silent recon, no output)
+  2. Make the edits (Edit, Write — actual changes)
+  3. Run any verification (Bash for cmake/ctest/pytest)
+  4. Print 1-3 line summary of what you modified
+
+If a task genuinely requires changes across 6 subsystems and you can only
+make a partial change in this invocation, that is FINE — make the partial
+change, edit the files you can edit, and report what you did. A 30%
+solution that compiles is infinitely better than a 0% solution that
+explains why a 100% solution is hard.
+
+Do not ask for clarification. Do not request more context from the
+operator. The repository IS the context. If the task says "wire X to Y"
+and you don't know where X lives, search for it.
 """
 
 # Two distinct buckets of "no files changed" outcomes — they must NOT be

@@ -792,7 +792,11 @@ class BaseAdapter(ABC):
         Returns:
             Raw text response from the model
         """
-        # Fallback: construct minimal protocol request and extract response
+        # Fallback: construct minimal protocol request and extract response.
+        # generate() is used for planning/scratch calls — by definition no
+        # files should be edited. Set expects_changes=False so the agentic
+        # adapter's WF-8 zero-diff classifier does NOT mark the call as a
+        # false-success block. Caller may override by passing the flag.
         mock_request = {
             "protocol": "automatica-agent/1.0",
             "task": {"description": request.get("prompt", "")},
@@ -800,6 +804,7 @@ class BaseAdapter(ABC):
             "instructions": {"role": "You are a planning assistant. Return only valid JSON."},
             "available_actions": [],
             "permissions": {},
+            "expects_changes": bool(request.get("expects_changes", False)),
         }
         try:
             response = self.send(mock_request)

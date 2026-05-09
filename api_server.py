@@ -2271,4 +2271,282 @@ class APIServer:
             r = _git(['diff', '--no-color'], cwd)
             return {'success': r['success'], 'diff': r['output']}
 
+        # ── Action log (project-scoped) ───────────────────────────────────────
+        def _open_pconn(project_id: int):
+            from automatica_db import init_project_db
+            row = _get_global_conn().execute(
+                'SELECT directory FROM known_projects WHERE id = ?',
+                (project_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, f'project {project_id} not known')
+            return init_project_db(Path(row['directory']))
+
+        @app.get('/api/projects/{project_id}/action-log')
+        def get_action_log_route(project_id: int, scope: str = '',
+                                 scope_id: str = '', limit: int = 200):
+            pconn = _open_pconn(project_id)
+            try:
+                if scope and scope_id:
+                    rows = pconn.execute(
+                        'SELECT actor, action, detail, scope, scope_id, '
+                        'created_at AS timestamp '
+                        'FROM action_log WHERE scope = ? AND scope_id = ? '
+                        'ORDER BY created_at ASC LIMIT ?',
+                        (scope, scope_id, limit),
+                    ).fetchall()
+                else:
+                    rows = pconn.execute(
+                        'SELECT actor, action, detail, scope, scope_id, '
+                        'created_at AS timestamp '
+                        'FROM action_log ORDER BY created_at DESC LIMIT ?',
+                        (limit,),
+                    ).fetchall()
+                return {'logs': [dict(r) for r in rows]}
+            except Exception as exc:
+                return {'logs': [], 'error': str(exc)}
+
+        # ── VCS commits (project-scoped, from project DB) ─────────────────────
+        @app.get('/api/projects/{project_id}/vcs-commits')
+        def get_entity_commits_route(project_id: int,
+                                     entity_type: str = '',
+                                     entity_id: str = ''):
+            pconn = _open_pconn(project_id)
+            try:
+                if entity_type and entity_id:
+                    rows = pconn.execute(
+                        'SELECT commit_hash, message, branch, committed_at '
+                        'FROM vcs_commits WHERE entity_type = ? AND entity_id = ? '
+                        'ORDER BY committed_at DESC',
+                        (entity_type, str(entity_id)),
+                    ).fetchall()
+                else:
+                    rows = pconn.execute(
+                        'SELECT commit_hash, message, branch, committed_at, '
+                        'entity_type, entity_id '
+                        'FROM vcs_commits ORDER BY committed_at DESC LIMIT 100',
+                    ).fetchall()
+                return {'commits': [dict(r) for r in rows]}
+            except Exception as exc:
+                return {'commits': [], 'error': str(exc)}
+
+        @app.post('/api/projects/{project_id}/vcs-commits/branches',
+                  dependencies=[Depends(_verify_token)])
+        def get_entity_branches_route(project_id: int, body: dict):
+            pconn = _open_pconn(project_id)
+            entity_type = body.get('entity_type', '')
+            entity_ids = body.get('entity_ids', []) or []
+            if not entity_type or not entity_ids:
+                return {'branches': {}}
+            try:
+                placeholders = ','.join('?' * len(entity_ids))
+                rows = pconn.execute(
+                    f'SELECT entity_id, branch FROM vcs_commits '
+                    f'WHERE entity_type = ? AND entity_id IN ({placeholders}) '
+                    f'GROUP BY entity_id',
+                    [entity_type] + [str(e) for e in entity_ids],
+                ).fetchall()
+                return {'branches': {r['entity_id']: r['branch'] for r in rows}}
+            except Exception as exc:
+                return {'branches': {}, 'error': str(exc)}
+
+        # ── Subtasks ──────────────────────────────────────────────────────────
+        @app.get('/api/tasks/{task_display_id}/subtasks')
+        def get_subtasks_route(task_display_id: str, project_id: int):
+            from automatica_db import get_subtasks as _gs
+            pconn = _open_pconn(project_id)
+            try:
+                return {'subtasks': _gs(pconn, task_display_id)}
+            except Exception:
+                return {'subtasks': []}
+
+        @app.post('/api/tasks/{task_display_id}/subtasks',
+                  dependencies=[Depends(_verify_token)])
+        def create_subtask_route(task_display_id: str, body: dict):
+            from automatica_db import create_subtask as _cs
+            pconn = _open_pconn(body.get('project_id', 0))
+            try:
+                result = _cs(pconn, task_display_id,
+                             body.get('title', ''),
+                             body.get('description', ''))
+                pconn.commit()
+                return {'success': True, 'subtask': result}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
+        @app.post('/api/subtasks/{subtask_display_id}/complete',
+                  dependencies=[Depends(_verify_token)])
+        def complete_subtask_route(subtask_display_id: str, body: dict):
+            from automatica_db import complete_subtask as _comp
+            pconn = _open_pconn(body.get('project_id', 0))
+            try:
+                _comp(pconn, subtask_display_id, body.get('result', ''))
+                pconn.commit()
+                return {'success': True}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
+        # ── Retrospectives ────────────────────────────────────────────────────
+        @app.get('/api/sprints/{sprint_id}/retrospective')
+        def get_retrospective_route(sprint_id: int, project_id: int):
+            from automatica_db import get_retrospective as _gr
+            pconn = _open_pconn(project_id)
+            try:
+                return {'retro': _gr(pconn, sprint_id) or {}}
+            except Exception:
+                return {'retro': {}}
+
+        @app.post('/api/sprints/{sprint_id}/retrospective',
+                  dependencies=[Depends(_verify_token)])
+        def save_retrospective_route(sprint_id: int, body: dict):
+            from automatica_db import save_retrospective as _sr
+            pconn = _open_pconn(body.get('project_id', 0))
+            try:
+                _sr(pconn, sprint_id, body.get('content', ''))
+                pconn.commit()
+                return {'success': True}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
+        # ── Comments (task-level) ─────────────────────────────────────────────
+        @app.get('/api/tasks/{task_display_id}/comments')
+        def get_comments_route(task_display_id: str, project_id: int):
+            from automatica_db import get_comments as _gc
+            pconn = _open_pconn(project_id)
+            try:
+                return {'comments': _gc(pconn, task_display_id)}
+            except Exception:
+                return {'comments': []}
+
+        @app.post('/api/tasks/{task_display_id}/comments',
+                  dependencies=[Depends(_verify_token)])
+        def add_comment_route(task_display_id: str, body: dict):
+            from automatica_db import add_comment as _ac
+            pconn = _open_pconn(body.get('project_id', 0))
+            try:
+                result = _ac(pconn, task_display_id,
+                             body.get('author', 'user'),
+                             body.get('content', ''))
+                pconn.commit()
+                return {'success': True, 'comment': result}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
+        # ── Agent stats (project-scoped) ──────────────────────────────────────
+        @app.get('/api/projects/{project_id}/agent-stats')
+        def get_all_agent_stats_route(project_id: int):
+            from automatica_db import get_all_agent_stats as _gas
+            pconn = _open_pconn(project_id)
+            try:
+                return {'stats': _gas(pconn)}
+            except Exception:
+                return {'stats': []}
+
+        @app.get('/api/projects/{project_id}/agents/{slug}/stats')
+        def get_agent_stats_route(project_id: int, slug: str):
+            from automatica_db import get_agent_stats as _gas1
+            pconn = _open_pconn(project_id)
+            try:
+                return {'stats': _gas1(pconn, slug)}
+            except Exception:
+                return {'stats': {}}
+
+        # ── Sprint cost summary ───────────────────────────────────────────────
+        @app.get('/api/sprints/{sprint_id}/cost-summary')
+        def get_sprint_cost_route(sprint_id: int, project_id: int):
+            from automatica_db import get_sprint_cost_summary as _gsc
+            pconn = _open_pconn(project_id)
+            try:
+                return _gsc(pconn, sprint_id) or {}
+            except Exception:
+                return {}
+
+        # ── Complexity routing (global) ───────────────────────────────────────
+        @app.get('/api/complexity-routing')
+        def get_complexity_routing_route(project_name: str = '*'):
+            from automatica_db import get_complexity_routing as _gcr
+            try:
+                return {'routing': _gcr(_get_global_conn(), project_name)}
+            except Exception:
+                return {'routing': []}
+
+        @app.post('/api/complexity-routing',
+                  dependencies=[Depends(_verify_token)])
+        def upsert_complexity_routing_route(body: dict):
+            from automatica_db import setup_complexity_routing_by_name as _scr
+            try:
+                _scr(_get_global_conn(),
+                     project_name=body.get('project_name', '*'),
+                     min_complexity=body.get('min_complexity', 1),
+                     max_complexity=body.get('max_complexity', 10),
+                     provider_id=body.get('provider_id'))
+                _get_global_conn().commit()
+                return {'success': True}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
+        # ── Project touch (update last_opened) ────────────────────────────────
+        @app.post('/api/projects/touch',
+                  dependencies=[Depends(_verify_token)])
+        def touch_project_route(body: dict):
+            from automatica_db import update_project_last_opened as _upd
+            try:
+                _upd(_get_global_conn(), body.get('directory', ''))
+                _get_global_conn().commit()
+                return {'success': True}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
+        # ── Project create (DB-only, file system optional) ────────────────────
+        @app.post('/api/projects',
+                  dependencies=[Depends(_verify_token)])
+        def create_project_route(body: dict):
+            from automatica_db import register_project as _rp
+            try:
+                pid = _rp(
+                    _get_global_conn(),
+                    name=body.get('name', ''),
+                    directory=body.get('directory', body.get('path', '')),
+                    goal=body.get('goal', ''),
+                )
+                _get_global_conn().commit()
+                return {'success': True, 'id': pid}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
+        # ── Generic per-project settings ──────────────────────────────────────
+        @app.get('/api/projects/{project_id}/settings/{key}')
+        def get_project_setting_route(project_id: int, key: str):
+            from automatica_db import get_project_setting as _gps
+            pconn = _open_pconn(project_id)
+            try:
+                value = _gps(pconn, key, default='')
+                return {'key': key, 'value': value}
+            except Exception as exc:
+                return {'key': key, 'value': '', 'error': str(exc)}
+
+        @app.put('/api/projects/{project_id}/settings/{key}',
+                 dependencies=[Depends(_verify_token)])
+        def set_project_setting_route(project_id: int, key: str, body: dict):
+            from automatica_db import set_project_setting as _sps
+            pconn = _open_pconn(project_id)
+            try:
+                _sps(pconn, key, str(body.get('value', '')))
+                pconn.commit()
+                return {'success': True}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
+        @app.delete('/api/projects/{project_id}',
+                    dependencies=[Depends(_verify_token)])
+        def delete_project_route(project_id: int):
+            try:
+                conn = _get_global_conn()
+                conn.execute('DELETE FROM known_projects WHERE id = ?',
+                             (project_id,))
+                conn.commit()
+                return {'success': True}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
         return app

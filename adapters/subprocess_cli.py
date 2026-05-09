@@ -597,7 +597,14 @@ class SubprocessCliAdapter(BaseAdapter):
         prompt      = self._build_prompt(request)
         extra_args  = self.config.get("args", [])
         cwd         = self.config.get("cwd") or None
-        expects_changes = bool(self.config.get("expects_changes", True))
+        # Per-request override > provider config > default(True). The
+        # 3-phase planner calls adapter.generate(...) which sets this to False
+        # for plan/code-markdown phases (no file edits expected); only the
+        # actual implementation step should be diff-classified.
+        if "expects_changes" in request:
+            expects_changes = bool(request["expects_changes"])
+        else:
+            expects_changes = bool(self.config.get("expects_changes", True))
 
         # Agentic CLIs (Claude, etc.) need longer timeouts — they do real work.
         default_timeout = 1800 if mode == "agentic" else 300

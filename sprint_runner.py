@@ -454,6 +454,35 @@ class SprintRunner:
 
         _log(f"[PLAN] Backlog has {len(backlog)} tasks available")
 
+        # F11: Reorder so blocking tasks (entrypoint-implementation, fix
+        # syntax/import errors) come first. Without this, the LLM ordering
+        # bias mixes polish/test tasks with the must-fix entrypoint task,
+        # and small models burn iterations on the wrong work first.
+        def _is_blocker_title(title: str) -> int:
+            """Return a priority bucket: 0=must-go-first, 1=normal."""
+            t = (title or "").lower()
+            if t.startswith("implement game logic in "):
+                return 0  # F9 stub-gate task
+            if t.startswith("implement ") and (
+                "src/main.py" in t or "src/index" in t or "as the working entrypoint" in t
+            ):
+                return 0  # F10 injected entrypoint task
+            if t.startswith("fix syntax error") or t.startswith("fix import error"):
+                return 0  # F7 runtime smoke fix tasks
+            return 1
+        backlog = sorted(backlog, key=lambda r: (
+            _is_blocker_title(r.get("title", "")),
+            -1 if (r.get("priority") or "").upper() == "HIGH" else
+            0 if (r.get("priority") or "").upper() == "MEDIUM" else 1,
+            r.get("id", 0),
+        ))
+        # Log if any blockers were promoted
+        _blockers = [r["display_id"] for r in backlog
+                       if _is_blocker_title(r.get("title", "")) == 0]
+        if _blockers:
+            _log(f"[PLAN] F11 gate: {len(_blockers)} blocker task(s) "
+                 f"promoted to top: {_blockers[:5]}")
+
         # Select tasks up to capacity
         selected = []
         total_points = 0
@@ -2777,6 +2806,60 @@ class SprintRunner:
         if not isinstance(tasks_data, list) or not tasks_data:
             _log(f"[BACKLOG] AI returned empty or invalid task list")
             return 0
+
+        # ── F10: Goal-anchored entrypoint task ──────────────────────────
+        # Ensure the initial backlog ALWAYS includes a task that targets
+        # the canonical entrypoint with REAL implementation. Without this,
+        # the LLM-generated backlog tends toward tests/refactors/polish
+        # while the entrypoint stays a stub forever.
+        try:
+            from run_autonomous import _detect_language as _dl
+            _lang = _dl(goal)
+        except Exception:
+            _lang = "python"
+        _entrypoint_map = {
+            "python": "src/main.py",
+            "typescript": "src/index.ts",
+            "go": "cmd/main.go",
+            "rust": "src/main.rs",
+            "java": "src/Main.java",
+            "csharp": "src/Program.cs",
+            "cpp": "src/main.cpp",
+        }
+        _entrypoint = _entrypoint_map.get(_lang, "src/main.py")
+        _ep_lc = _entrypoint.lower()
+        _has_entrypoint_task = False
+        for t in tasks_data:
+            if not isinstance(t, dict):
+                continue
+            blob = (str(t.get("title", "")) + " " + str(t.get("description", ""))).lower()
+            if _ep_lc in blob or "main.py" in blob and _lang == "python":
+                _has_entrypoint_task = True
+                break
+        if not _has_entrypoint_task:
+            _stem = _entrypoint.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            _ext = _entrypoint.rsplit(".", 1)[-1]
+            ep_task = {
+                "title": f"Implement {_entrypoint} as the working entrypoint",
+                "description": (
+                    f"1. Create {_entrypoint} as the runnable entrypoint that "
+                    f"satisfies the project goal. The file MUST contain real "
+                    f"code, not a placeholder.\n"
+                    f"2. Required structure: at least one `def` (e.g. `def main():`), "
+                    f"a real loop body that uses the project's modules, and "
+                    f"`if __name__ == \"__main__\": main()` at the bottom.\n"
+                    f"3. Verify with run_command: `python -m py_compile {_entrypoint}` "
+                    f"and `python -c \"import os; os.environ['SDL_VIDEODRIVER']='dummy'; "
+                    f"import {_stem}\"` — both must exit 0.\n"
+                    f"4. step_done is rejected unless {_entrypoint} passes the "
+                    f"AST-based stub check (no def/class/main block = stub)."
+                ),
+                "priority": "HIGH",
+                "complexity": 5,
+            }
+            tasks_data = [ep_task] + list(tasks_data)
+            _log(f"[BACKLOG] F10: injected entrypoint task for {_entrypoint} "
+                 f"(model didn't propose one)")
 
         inserted = 0
         for i, task in enumerate(tasks_data[:10]):

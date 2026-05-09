@@ -211,6 +211,85 @@ def _extract_python_signatures(tree: ast.AST) -> list[str]:
     return sigs
 
 
+def _is_stub_module(tree: ast.Module) -> bool:
+    """True if a parsed Python module has no real top-level implementation.
+    Mirrors AgentProtocol._py_is_stub but inlined to avoid an import cycle.
+    A module is a stub if its top-level body (after stripping docstring)
+    contains nothing more than imports, trivial __all__/__version__ assigns,
+    or `if __name__==__main__:` blocks with print/pass/ellipsis bodies."""
+    body = list(tree.body)
+    # Strip module docstring
+    if (body and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)):
+        body = body[1:]
+
+    def _is_trivial_body(b) -> bool:
+        if not b:
+            return True
+        if len(b) > 1:
+            return False
+        n = b[0]
+        if isinstance(n, ast.Pass):
+            return True
+        if isinstance(n, ast.Expr):
+            v = n.value
+            if isinstance(v, ast.Constant):
+                return True
+            if (isinstance(v, ast.Call) and isinstance(v.func, ast.Name)
+                    and v.func.id in ('print', 'breakpoint', 'exit', 'quit')):
+                return True
+        if isinstance(n, ast.Raise):
+            exc = n.exc
+            if (isinstance(exc, ast.Call) and isinstance(exc.func, ast.Name)
+                    and exc.func.id == 'NotImplementedError'):
+                return True
+            if isinstance(exc, ast.Name) and exc.id == 'NotImplementedError':
+                return True
+        return False
+
+    trivial_lhs = {'__all__', '__version__', '__author__', '__email__', '__doc__'}
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return False
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(node, ast.Assign):
+            lhs = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            if any(n not in trivial_lhs for n in lhs):
+                return False
+            continue
+        if isinstance(node, ast.AugAssign):
+            return False
+        if isinstance(node, ast.If):
+            test = node.test
+            if (isinstance(test, ast.Compare)
+                    and isinstance(test.left, ast.Name)
+                    and test.left.id == '__name__'):
+                if _is_trivial_body(node.body):
+                    continue
+                return False
+            if not _is_trivial_body(node.body):
+                return False
+            continue
+        if isinstance(node, (ast.Try, ast.With, ast.For, ast.While,
+                              ast.AsyncWith, ast.AsyncFor)):
+            if not _is_trivial_body(node.body):
+                return False
+            continue
+        if isinstance(node, ast.Expr):
+            if _is_trivial_body([node]):
+                continue
+            return False
+        if isinstance(node, ast.Raise):
+            if _is_trivial_body([node]):
+                continue
+            return False
+        # Anything else: not stub
+        return False
+    return True
+
+
 def _python_module_docstring(tree: ast.Module) -> Optional[ast.Expr]:
     body = tree.body
     if not body:
@@ -330,6 +409,14 @@ def summarise_python_file(path: Path, *, endpoint: str, model: str,
         tree = ast.parse(src)
     except SyntaxError:
         return False  # don't rewrite syntactically broken files
+
+    # F13: Don't decorate stub files with auto-summaries. Auto-generated
+    # docstrings inflate file length and falsely advertise functionality
+    # the module doesn't have, breaking downstream filters that check "is
+    # this file real" by length+def/class presence. If the file has no
+    # real top-level def/class/non-trivial assign, leave it untouched.
+    if _is_stub_module(tree):
+        return False
 
     existing_doc = _python_module_docstring(tree)
     existing_text = ""

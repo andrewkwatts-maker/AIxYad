@@ -461,8 +461,10 @@ def _wake_up_scan(project_dir: Path, provider: str, log_fn=print) -> dict:
             gdb = _sq3.connect(str(_global_db_path))
             gdb.row_factory = _sq3.Row
             cfg = get_provider_config(gdb, provider) or {}
-            _endpoint = cfg.get("endpoint", _endpoint)
-            _model = cfg.get("summary_model", "llama3.2:3b")
+            # Falsy-check, not .get(default): Claude provider rows store an
+            # empty string for endpoint, which would yield "/api/generate".
+            _endpoint = (cfg.get("endpoint") or "").strip() or _endpoint
+            _model = (cfg.get("summary_model") or "").strip() or _model
             gdb.close()
         except Exception:
             pass

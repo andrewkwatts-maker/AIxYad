@@ -2057,6 +2057,96 @@ class SprintRunner:
 
         _log(f"[SMOKE] {rel_entry} compiles + imports OK")
 
+        # 3. Stub gate — compiles + imports isn't enough. A placeholder file
+        # like `# Add your code here.` passes both checks but has no real
+        # implementation. Use the AST-based stub detector to verify the
+        # entrypoint actually does something. If stub, queue a HIGH task
+        # to implement the real game loop.
+        try:
+            _entry_text = entry.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            _log(f"[SMOKE] could not read {rel_entry} for stub check: {exc}")
+            return
+        try:
+            from agent_protocol import AgentProtocol as _AP
+            _stub_check = _AP.__new__(_AP)
+            _stub_check.project_dir = self.project_dir
+            is_stub = _stub_check._py_is_stub(_entry_text)
+        except Exception as exc:
+            _log(f"[SMOKE] stub-detect on {rel_entry} crashed: {exc}")
+            return
+        if not is_stub:
+            return
+
+        # Stub entrypoint — queue HIGH-priority "Implement game" task.
+        # Use the throttle to escalate after 3 repeats.
+        impl_title = f"Implement game logic in {rel_entry} (entrypoint is a stub)"
+        # Throttle: count recent done rows with this title in last 24h.
+        try:
+            recent_done = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status='done' "
+                "AND completed_at IS NOT NULL "
+                "AND completed_at >= datetime('now', '-1 day') "
+                "AND title = ?",
+                (impl_title,),
+            ).fetchone()[0]
+        except Exception:
+            recent_done = 0
+        if recent_done >= 3:
+            try:
+                conn.execute(
+                    "INSERT INTO action_log (scope, scope_id, actor, action, detail) "
+                    "VALUES (?,?,?,?,?)",
+                    ("project", 0, "smoke_check", "stuck",
+                     json.dumps({
+                         "title": impl_title,
+                         "recent_done_count_24h": recent_done,
+                         "note": ("Entrypoint stub task marked done {n}x in last 24h "
+                                  "but main.py is STILL a stub.").format(n=recent_done),
+                     })),
+                )
+                conn.commit()
+            except Exception:
+                pass
+            _log(f"[SMOKE] STUCK: {rel_entry} still stub after {recent_done} "
+                 f"completion attempts in 24h — needs human intervention.")
+            return
+
+        # Build description — be very explicit about what "real" means.
+        impl_desc = (
+            f"⚠ {rel_entry} compiles and imports OK but is a STUB (no real "
+            f"def/class, only a placeholder body or pure docstring). The "
+            f"entire project is blocked on this. Make {rel_entry} a real "
+            f"entrypoint that runs the project.\n\n"
+            f"Required structure (Python project; adjust for goal specifics):\n"
+            f"  1. import the modules you've already built (paddle, ball, etc.).\n"
+            f"  2. def main(): with the actual game / app loop body. Initialise, "
+            f"     create instances, run the loop until exit condition.\n"
+            f"  3. if __name__ == '__main__':\\n        main()  at the bottom.\n\n"
+            f"Acceptance criteria (the smoke check will re-run next sprint and "
+            f"will reject step_done if any of these fail):\n"
+            f"  • {rel_entry} contains at least one `def` and one `class` reference "
+            f"OR a real top-level call.\n"
+            f"  • A `if __name__ == \"__main__\":` block exists with a real call "
+            f"in its body (not just `pass`/`print`/`...`).\n"
+            f"  • `python -m py_compile {rel_entry}` exits 0.\n"
+            f"  • `python -c \"import os; os.environ['SDL_VIDEODRIVER']='dummy'; "
+            f"import {entry.stem}\"` exits 0.\n"
+        )
+        if recent_done >= 1:
+            impl_desc = (
+                f"⚠ Previous {recent_done} attempt(s) at this exact task "
+                f"in last 24h ALL claimed done — but {rel_entry} is STILL a "
+                f"stub. Earlier completions were superficial. This run MUST "
+                f"actually fill {rel_entry} with working code.\n\n"
+            ) + impl_desc
+
+        _queue_fix(
+            title=impl_title,
+            desc=impl_desc,
+            complexity=5 if recent_done == 0 else 8,  # bump if previously failed
+        )
+
     def _drain_summary_indexer(self) -> None:
         """If a SummaryIndexer was attached during task execution, drain its
         queue. Each task's AgentProtocol owns its own indexer; we collect
@@ -3124,15 +3214,29 @@ class SprintRunner:
                 # Skip stub modules — seeding a smoke test for a file that's
                 # just `print('Hello, world!')` produces a vacuous passing
                 # test that hides the underlying problem (the module is empty).
+                # Use the AST-based stub detector so docstring padding (auto-
+                # generated @automatica-summary blocks) doesn't defeat the
+                # filter the way the previous len<200 conjunction did.
                 try:
                     _src_text = (self.project_dir / p).read_text(
                         encoding="utf-8", errors="replace")
-                    if ("def " not in _src_text
-                            and "class " not in _src_text
-                            and len(_src_text.strip()) < 200):
-                        continue
                 except Exception:
                     continue
+                try:
+                    from agent_protocol import AgentProtocol as _AP
+                    _stub_check = _AP.__new__(_AP)
+                    _stub_check.project_dir = self.project_dir
+                    if _stub_check._py_is_stub(_src_text):
+                        _log(f"[SEED] skipped {p} (stub module — "
+                             f"no real def/class)")
+                        continue
+                except Exception:
+                    # If the AST check itself fails, fall back to the old
+                    # heuristic so we don't crash. Treat tiny + no-def as stub.
+                    if (len(_src_text.strip()) < 200
+                            and "def " not in _src_text
+                            and "class " not in _src_text):
+                        continue
                 module_name = p[len("src/"):-len(".py")].replace("/", "_")
                 test_path = f"tests/test_{module_name}_smoke.py"
                 # Already has a smoke test on disk? skip.

@@ -590,16 +590,64 @@ class AgentProtocol:
         # mode for small models) by separating design from syntax. Falls
         # through to the iterative loop on hard failure.
         if self._should_use_three_phase(task):
+            print(f"[3-phase] entering for {task.get('display_id','?')}: "
+                  f"{(task.get('title') or '')[:60]}", flush=True)
+            if self.log_dir:
+                try:
+                    self._write_log(0, '3p_entry', {
+                        'task_id': task.get('display_id', ''),
+                        'title': task.get('title', '')[:200],
+                        'complexity': task.get('complexity', 0),
+                    })
+                except Exception:
+                    pass
             try:
                 result_3p = self._run_three_phase(task, context, instructions, start_time)
                 if result_3p is not None:
+                    print(f"[3-phase] terminal for {task.get('display_id','?')}: "
+                          f"success={result_3p.get('success')}", flush=True)
+                    if self.log_dir:
+                        try:
+                            self._write_log(0, '3p_exit', {
+                                'success': result_3p.get('success'),
+                                'reason': result_3p.get('reason', ''),
+                            })
+                        except Exception:
+                            pass
                     return result_3p
+                else:
+                    print(f"[3-phase] fell through to iterative loop "
+                          f"for {task.get('display_id','?')}", flush=True)
+                    if self.log_dir:
+                        try:
+                            self._write_log(0, '3p_fallthrough', {})
+                        except Exception:
+                            pass
             except Exception as _3p_exc:
                 # Defensive — never let 3-phase crashes prevent fallback.
+                print(f"[3-phase] CRASHED for {task.get('display_id','?')}: "
+                      f"{_3p_exc} — falling back to iterative", flush=True)
+                if self.log_dir:
+                    try:
+                        self._write_log(0, '3p_crashed', {'exc': str(_3p_exc)})
+                    except Exception:
+                        pass
                 self.history.append({
                     'role': 'system',
                     'content': f"three-phase mode crashed: {_3p_exc} — falling back to iterative loop"
                 })
+        else:
+            # Log the selection decision so we can see why 3-phase didn't fire
+            if self.log_dir:
+                try:
+                    self._write_log(0, '3p_skipped', {
+                        'task_id': task.get('display_id', ''),
+                        'reason': 'selector_rejected',
+                        'complexity': task.get('complexity', 0),
+                        'title': (task.get('title') or '')[:80],
+                    })
+                except Exception:
+                    pass
         # Track every successful action outside of history so it survives history trimming.
         # Injected into every request as task['_completed'] so the model doesn't repeat work.
         completed_steps: list = []
@@ -1028,14 +1076,17 @@ class AgentProtocol:
                 'prompt': plan_prompt, 'max_tokens': 800, 'temperature': 0.2,
             })
         except Exception as exc:
+            print(f"[3-phase] phase 1 EXC: {exc}", flush=True)
             self.history.append({'role': 'system',
                 'content': f"3p phase 1 (plan) failed: {exc}"})
             return None  # fall through
         plan_text = (plan_text or "").strip()
         if not plan_text or plan_text.startswith("Error:"):
+            print(f"[3-phase] phase 1 EMPTY/ERROR: '{plan_text[:100]}'", flush=True)
             self.history.append({'role': 'system',
                 'content': "3p phase 1 returned empty / errored — falling back to iterative loop"})
             return None
+        print(f"[3-phase] phase 1 OK ({len(plan_text)} chars)", flush=True)
         if self.log_dir:
             self._write_log(0, '3p_phase1_plan', {'plan': plan_text})
 

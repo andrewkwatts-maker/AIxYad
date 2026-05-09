@@ -531,16 +531,59 @@ class SprintRunner:
         return sprint_info, selected
 
     def _get_blocked_task_ids(self, conn: sqlite3.Connection, tasks: List[dict]) -> set:
-        """Find tasks whose dependencies are not yet done."""
+        """Find tasks whose dependencies are not yet done.
+
+        Two dep mechanisms honored:
+          1) depends_on_task_id  -> single FK on another task row.
+          2) depends_lamport     -> comma-sep list of lamport tiers; the task
+             is blocked unless every task at each listed lamport is 'done'.
+             Used to enforce sprint-to-sprint ordering (Sprint N's tasks
+             carry depends_lamport listing all earlier sprints' lamports).
+        """
         blocked = set()
+        # Cache lamport-tier completion checks across the loop.
+        _lamport_open: Dict[int, int] = {}
+
+        def _open_count_at(lamport_value: int) -> int:
+            if lamport_value in _lamport_open:
+                return _lamport_open[lamport_value]
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM tasks "
+                "WHERE lamport = ? AND status != 'done' AND status != 'archived'",
+                (lamport_value,),
+            ).fetchone()
+            n = row["n"] if row else 0
+            _lamport_open[lamport_value] = n
+            return n
+
         for task in tasks:
+            tid = task["id"]
+            # 1) Direct task-level dep
             dep_id = task.get("depends_on_task_id")
             if dep_id is not None:
                 dep_row = conn.execute(
                     "SELECT status FROM tasks WHERE id = ?", (dep_id,)
                 ).fetchone()
                 if dep_row and dep_row["status"] != "done":
-                    blocked.add(task["id"])
+                    blocked.add(tid)
+                    continue
+
+            # 2) Lamport-tier dep ("Sprint N's tasks wait for sprints < N")
+            dep_lam = (task.get("depends_lamport") or "").strip()
+            if not dep_lam:
+                continue
+            try:
+                tiers = [int(x.strip()) for x in dep_lam.split(",") if x.strip()]
+            except ValueError:
+                continue
+            for tier in tiers:
+                # Don't block on the same tier the task belongs to — that
+                # would deadlock a sprint with no other dep mechanism.
+                if tier == task.get("lamport"):
+                    continue
+                if _open_count_at(tier) > 0:
+                    blocked.add(tid)
+                    break
         return blocked
 
     def _apply_filter(self, tasks: List[dict], filters: Dict[str, Any]) -> List[dict]:
@@ -608,6 +651,39 @@ class SprintRunner:
         for st in sprint_tasks:
             if st.get("status") in ("done", "blocked"):
                 continue
+
+            # WF-3.1: re-check dep gates at execute time, not just plan time.
+            # Tasks may have been put into sprint_planned BEFORE deps were
+            # encoded; without this check the lane will execute SP2 work
+            # while SP1 is still open. Honors both depends_on_task_id and
+            # depends_lamport.
+            _full = conn.execute(
+                "SELECT id, depends_on_task_id, depends_lamport, lamport "
+                "FROM tasks WHERE display_id = ?",
+                (st["task_display_id"],)
+            ).fetchone()
+            if _full:
+                _full_dict = {
+                    "id": _full["id"],
+                    "depends_on_task_id": _full["depends_on_task_id"],
+                    "depends_lamport": _full["depends_lamport"],
+                    "lamport": _full["lamport"],
+                }
+                _gated = self._get_blocked_task_ids(conn, [_full_dict])
+                if _full["id"] in _gated:
+                    _log(f"[EXEC] Skipping {st['task_display_id']} — dep gate "
+                         f"not satisfied (depends_on_task_id or depends_lamport)")
+                    # Park back to backlog so a future sprint can re-claim
+                    # once deps resolve. Don't leave it stuck in sprint_planned.
+                    conn.execute(
+                        "UPDATE tasks SET status='backlog', reserved_by='', "
+                        "reserved_at=NULL, started_at=NULL "
+                        "WHERE display_id=?",
+                        (st["task_display_id"],),
+                    )
+                    conn.commit()
+                    continue
+
             # Check if underlying task allows parallel execution
             task_row = conn.execute(
                 "SELECT parallel_ok, depends_on_task_id, failure_count FROM tasks WHERE display_id = ?",

@@ -1847,10 +1847,46 @@ class APIServer:
             conn.commit()
             return {'success': True, 'updated': cur.rowcount}
 
+        @app.patch('/api/configs/{config_id}',
+                   dependencies=[Depends(_verify_token)])
+        def patch_config_route(config_id: int, body: dict):
+            """Update config name/description and optionally replace overrides.
+
+            Body: {name?, description?, overrides?: {scope: {key: value}}}
+            """
+            from automatica_db import set_config_override as _set_override
+            conn = _get_global_conn()
+            allowed = {'name', 'description', 'parent_config_id'}
+            sets, vals = [], []
+            for k, v in body.items():
+                if k in allowed:
+                    sets.append(f'{k} = ?'); vals.append(v)
+            if sets:
+                vals.append(config_id)
+                conn.execute(
+                    f"UPDATE configs SET {', '.join(sets)} WHERE id = ?", vals
+                )
+            overrides = body.get('overrides')
+            if isinstance(overrides, dict):
+                conn.execute(
+                    'DELETE FROM config_overrides WHERE config_id = ?',
+                    (config_id,),
+                )
+                for scope, kv in overrides.items():
+                    if not isinstance(kv, dict):
+                        continue
+                    for key, value in kv.items():
+                        _set_override(conn, config_id, key,
+                                      str(value), scope=scope)
+            conn.commit()
+            return {'success': True}
+
         @app.delete('/api/configs/{config_id}',
                     dependencies=[Depends(_verify_token)])
         def delete_config_route(config_id: int):
             conn = _get_global_conn()
+            conn.execute('DELETE FROM config_overrides WHERE config_id = ?',
+                         (config_id,))
             cur = conn.execute('DELETE FROM configs WHERE id = ?', (config_id,))
             conn.commit()
             return {'success': True, 'deleted': cur.rowcount}
@@ -1887,5 +1923,352 @@ class APIServer:
                 _set_override(conn, cid, key, value, body.get('scope', 'project'))
             conn.commit()
             return {'success': True}
+
+        # ── Standards: DELETE ─────────────────────────────────────────────────
+        @app.delete('/api/standards/{filename}',
+                    dependencies=[Depends(_verify_token)])
+        def delete_standard_route(filename: str):
+            import re as _re
+            safe = _re.sub(r'[^A-Za-z0-9._-]', '', filename)
+            if not safe:
+                raise HTTPException(400, 'invalid filename')
+            sdir = Path.home() / '.automatica' / 'standards'
+            target = sdir / safe
+            if not target.exists():
+                raise HTTPException(404, 'standard not found')
+            target.unlink()
+            return {'success': True}
+
+        # ── Pipelines CRUD (file-backed: ~/.automatica/pipelines.json) ────────
+        _PIPELINES_FILE = Path.home() / '.automatica' / 'pipelines.json'
+
+        def _load_pipelines_file() -> list:
+            import json as _j
+            if _PIPELINES_FILE.exists():
+                try:
+                    data = _j.loads(_PIPELINES_FILE.read_text(encoding='utf-8'))
+                    return data if isinstance(data, list) else []
+                except Exception:
+                    return []
+            return []
+
+        def _save_pipelines_file(pipelines: list) -> None:
+            import json as _j
+            _PIPELINES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _PIPELINES_FILE.write_text(
+                _j.dumps(pipelines, indent=2), encoding='utf-8',
+            )
+
+        @app.get('/api/pipelines')
+        def list_pipelines():
+            return {'pipelines': _load_pipelines_file()}
+
+        @app.post('/api/pipelines', dependencies=[Depends(_verify_token)])
+        def create_pipeline_route(body: dict):
+            pipelines = _load_pipelines_file()
+            key = body.get('key', '').strip()
+            if not key:
+                raise HTTPException(400, 'key required')
+            if any(p.get('key') == key for p in pipelines):
+                raise HTTPException(409, f'pipeline {key!r} exists')
+            pipeline = {
+                'key': key,
+                'name': body.get('name', key),
+                'icon': body.get('icon', 'pipe'),
+                'owner': body.get('owner', 'global'),
+                'stages': body.get('stages', []),
+            }
+            pipelines.append(pipeline)
+            _save_pipelines_file(pipelines)
+            return {'success': True, 'pipeline': pipeline}
+
+        @app.get('/api/pipelines/{key}')
+        def get_pipeline_route(key: str):
+            for p in _load_pipelines_file():
+                if p.get('key') == key:
+                    return p
+            raise HTTPException(404, 'pipeline not found')
+
+        @app.put('/api/pipelines/{key}',
+                 dependencies=[Depends(_verify_token)])
+        def update_pipeline_route(key: str, body: dict):
+            pipelines = _load_pipelines_file()
+            for i, p in enumerate(pipelines):
+                if p.get('key') == key:
+                    for f in ('name', 'icon', 'owner', 'stages'):
+                        if f in body:
+                            p[f] = body[f]
+                    pipelines[i] = p
+                    _save_pipelines_file(pipelines)
+                    return {'success': True, 'pipeline': p}
+            raise HTTPException(404, 'pipeline not found')
+
+        @app.put('/api/pipelines',
+                 dependencies=[Depends(_verify_token)])
+        def replace_pipelines_route(body: dict):
+            """Replace the entire pipelines list (used for bulk save)."""
+            pipelines = body.get('pipelines', body if isinstance(body, list) else [])
+            if not isinstance(pipelines, list):
+                raise HTTPException(400, 'expected list of pipelines')
+            _save_pipelines_file(pipelines)
+            return {'success': True, 'count': len(pipelines)}
+
+        @app.delete('/api/pipelines/{key}',
+                    dependencies=[Depends(_verify_token)])
+        def delete_pipeline_route(key: str):
+            pipelines = _load_pipelines_file()
+            new_list = [p for p in pipelines if p.get('key') != key]
+            if len(new_list) == len(pipelines):
+                raise HTTPException(404, 'pipeline not found')
+            _save_pipelines_file(new_list)
+            return {'success': True}
+
+        # ── Global triggers (file-backed: ~/.automatica/triggers.json) ────────
+        _TRIGGERS_FILE = Path.home() / '.automatica' / 'triggers.json'
+
+        def _load_triggers_file(path: Path) -> list:
+            import json as _j
+            if path.exists():
+                try:
+                    data = _j.loads(path.read_text(encoding='utf-8'))
+                    return data if isinstance(data, list) else []
+                except Exception:
+                    return []
+            return []
+
+        def _save_triggers_file(path: Path, triggers: list) -> None:
+            import json as _j
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_j.dumps(triggers, indent=2), encoding='utf-8')
+
+        @app.get('/api/triggers')
+        def list_global_triggers():
+            return {'triggers': _load_triggers_file(_TRIGGERS_FILE)}
+
+        @app.post('/api/triggers',
+                  dependencies=[Depends(_verify_token)])
+        def save_global_triggers(body: dict):
+            triggers = body.get('triggers', body if isinstance(body, list) else [])
+            if not isinstance(triggers, list):
+                raise HTTPException(400, 'expected list of triggers')
+            _save_triggers_file(_TRIGGERS_FILE, triggers)
+            return {'success': True, 'count': len(triggers)}
+
+        @app.put('/api/projects/{project_id}/triggers',
+                 dependencies=[Depends(_verify_token)])
+        def replace_project_triggers(project_id: int, body: dict):
+            """Replace the project's triggers with the supplied list."""
+            row = _get_global_conn().execute(
+                'SELECT directory FROM known_projects WHERE id = ?', (project_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, f'project {project_id} not known')
+            triggers = body.get('triggers', body if isinstance(body, list) else [])
+            if not isinstance(triggers, list):
+                raise HTTPException(400, 'expected list of triggers')
+            tpath = Path(row['directory']) / 'automatica' / 'triggers.json'
+            _save_triggers_file(tpath, triggers)
+            return {'success': True, 'count': len(triggers)}
+
+        # ── Managers CRUD ─────────────────────────────────────────────────────
+        @app.get('/api/managers')
+        def list_managers():
+            from automatica_db import get_managers as _gm, get_manager_projects as _gmp
+            conn = _get_global_conn()
+            managers = _gm(conn)
+            for m in managers:
+                m['projects'] = _gmp(conn, m['id'])
+            return {'managers': managers}
+
+        @app.post('/api/managers', dependencies=[Depends(_verify_token)])
+        def create_manager_route(body: dict):
+            from automatica_db import (
+                create_manager as _cm,
+                add_manager_project as _amp,
+            )
+            conn = _get_global_conn()
+            mid = _cm(
+                conn,
+                name=body.get('name', ''),
+                goal=body.get('goal', ''),
+                config_id=body.get('config_id'),
+            )
+            for pdir in body.get('project_dirs', []) or []:
+                try:
+                    _amp(conn, mid, pdir)
+                except Exception:
+                    pass
+            conn.commit()
+            return {'success': True, 'id': mid}
+
+        @app.patch('/api/managers/{manager_id}',
+                   dependencies=[Depends(_verify_token)])
+        def patch_manager_route(manager_id: int, body: dict):
+            from automatica_db import (
+                update_manager as _um,
+                add_manager_project as _amp,
+                remove_manager_project as _rmp,
+                get_manager_projects as _gmp,
+            )
+            conn = _get_global_conn()
+            fields = {k: v for k, v in body.items()
+                      if k in {'name', 'goal', 'config_id'}}
+            if fields:
+                _um(conn, manager_id, **fields)
+            if 'project_dirs' in body and isinstance(body['project_dirs'], list):
+                current = {p['directory'] for p in _gmp(conn, manager_id)}
+                want = set(body['project_dirs'])
+                for pdir in want - current:
+                    try: _amp(conn, manager_id, pdir)
+                    except Exception: pass
+                for pdir in current - want:
+                    try: _rmp(conn, manager_id, pdir)
+                    except Exception: pass
+            conn.commit()
+            return {'success': True}
+
+        @app.delete('/api/managers/{manager_id}',
+                    dependencies=[Depends(_verify_token)])
+        def delete_manager_route(manager_id: int):
+            conn = _get_global_conn()
+            conn.execute('DELETE FROM manager_projects WHERE manager_id = ?',
+                         (manager_id,))
+            cur = conn.execute('DELETE FROM managers WHERE id = ?', (manager_id,))
+            conn.commit()
+            return {'success': True, 'deleted': cur.rowcount}
+
+        # ── VCS operations (subprocess git wrappers) ──────────────────────────
+        def _resolve_project_dir(project_id: int) -> str:
+            row = _get_global_conn().execute(
+                'SELECT directory FROM known_projects WHERE id = ?',
+                (project_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, f'project {project_id} not known')
+            return row['directory']
+
+        def _git(args: list, cwd: str, timeout: int = 30) -> dict:
+            import subprocess as _sp
+            try:
+                r = _sp.run(['git'] + args, cwd=cwd, capture_output=True,
+                            text=True, timeout=timeout)
+                return {
+                    'success': r.returncode == 0,
+                    'output': r.stdout,
+                    'error': r.stderr,
+                    'returncode': r.returncode,
+                }
+            except _sp.TimeoutExpired:
+                return {'success': False, 'output': '', 'error': 'timeout',
+                        'returncode': -1}
+            except FileNotFoundError:
+                return {'success': False, 'output': '', 'error': 'git not found',
+                        'returncode': -1}
+
+        @app.get('/api/vcs/status')
+        def vcs_status_route(project_id: int):
+            cwd = _resolve_project_dir(project_id)
+            branch = _git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)
+            short = _git(['status', '--porcelain'], cwd)
+            ahead_behind = _git(
+                ['rev-list', '--left-right', '--count', '@{upstream}...HEAD'],
+                cwd,
+            )
+            ahead, behind = 0, 0
+            if ahead_behind['success']:
+                parts = ahead_behind['output'].strip().split()
+                if len(parts) == 2:
+                    behind, ahead = int(parts[0]), int(parts[1])
+            dirty = []
+            if short['success']:
+                for ln in short['output'].splitlines():
+                    ln = ln.strip()
+                    if ln:
+                        dirty.append(ln[3:] if len(ln) > 3 else ln)
+            return {
+                'branch': branch['output'].strip() if branch['success'] else '',
+                'dirty_files': dirty,
+                'ahead': ahead,
+                'behind': behind,
+            }
+
+        @app.post('/api/vcs/commit',
+                  dependencies=[Depends(_verify_token)])
+        def vcs_commit_route(body: dict):
+            cwd = _resolve_project_dir(body.get('project_id', 0))
+            files = body.get('files') or []
+            msg = body.get('message', '').strip()
+            if not msg:
+                raise HTTPException(400, 'message required')
+            if files:
+                _git(['add'] + list(files), cwd)
+            else:
+                _git(['add', '-A'], cwd)
+            return _git(['commit', '-m', msg], cwd)
+
+        @app.post('/api/vcs/push',
+                  dependencies=[Depends(_verify_token)])
+        def vcs_push_route(body: dict):
+            cwd = _resolve_project_dir(body.get('project_id', 0))
+            args = ['push', body.get('remote', 'origin')]
+            if body.get('branch'):
+                args.append(body['branch'])
+            return _git(args, cwd, timeout=120)
+
+        @app.post('/api/vcs/pull',
+                  dependencies=[Depends(_verify_token)])
+        def vcs_pull_route(body: dict):
+            cwd = _resolve_project_dir(body.get('project_id', 0))
+            return _git(['pull', body.get('remote', 'origin')], cwd, timeout=120)
+
+        @app.post('/api/vcs/branch',
+                  dependencies=[Depends(_verify_token)])
+        def vcs_branch_route(body: dict):
+            cwd = _resolve_project_dir(body.get('project_id', 0))
+            name = body.get('branch_name', '').strip()
+            if not name:
+                raise HTTPException(400, 'branch_name required')
+            return _git(['checkout', '-B', name], cwd)
+
+        @app.post('/api/vcs/reset',
+                  dependencies=[Depends(_verify_token)])
+        def vcs_reset_route(body: dict):
+            cwd = _resolve_project_dir(body.get('project_id', 0))
+            mode = body.get('mode', 'soft')
+            if mode not in ('soft', 'hard', 'mixed'):
+                raise HTTPException(400, 'mode must be soft|hard|mixed')
+            ref = body.get('ref', 'HEAD~1')
+            return _git(['reset', f'--{mode}', ref], cwd)
+
+        @app.post('/api/vcs/pr',
+                  dependencies=[Depends(_verify_token)])
+        def vcs_pr_route(body: dict):
+            cwd = _resolve_project_dir(body.get('project_id', 0))
+            title = body.get('title', '').strip()
+            if not title:
+                raise HTTPException(400, 'title required')
+            args = ['pr', 'create', '--title', title,
+                    '--body', body.get('body', '') or title,
+                    '--base', body.get('base_branch', 'main')]
+            import subprocess as _sp
+            try:
+                r = _sp.run(['gh'] + args, cwd=cwd, capture_output=True,
+                            text=True, timeout=60)
+                return {
+                    'success': r.returncode == 0,
+                    'output': r.stdout,
+                    'error': r.stderr,
+                    'url': r.stdout.strip().splitlines()[-1] if r.stdout else '',
+                }
+            except FileNotFoundError:
+                return {'success': False, 'error': 'gh CLI not installed'}
+            except _sp.TimeoutExpired:
+                return {'success': False, 'error': 'timeout'}
+
+        @app.get('/api/vcs/diff')
+        def vcs_diff_route(project_id: int):
+            cwd = _resolve_project_dir(project_id)
+            r = _git(['diff', '--no-color'], cwd)
+            return {'success': r['success'], 'diff': r['output']}
 
         return app

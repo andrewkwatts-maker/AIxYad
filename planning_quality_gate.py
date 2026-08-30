@@ -47,17 +47,38 @@ def evaluate_plan_completeness(
         'available_actions': [],  # No actions during evaluation
     }
     
-    try:
-        response = adapter.send(evaluation_prompt)
-        return _parse_evaluation_response(response)
-    except Exception as exc:
-        # On error, assume plan is complete to avoid blocking execution
-        return {
-            'is_complete': True,
-            'missing_items': [],
-            'clarifications_needed': [],
-            'error': str(exc),
-        }
+    # Isolate this call from the agent's main message history — the gate
+    # asks for {is_complete, missing, reasoning} JSON which doesn't match the
+    # action protocol; if its prompt+response stay in adapter._messages the
+    # next action call will see them and the model gets confused, emitting
+    # is_complete shape instead of action shape and failing every iteration.
+    saved_messages = getattr(adapter, '_messages', None)
+    if saved_messages is not None:
+        snapshot = list(saved_messages)
+        try:
+            adapter._messages = list(snapshot[:1])  # keep only system prompt
+            response = adapter.send(evaluation_prompt)
+        except Exception as exc:
+            adapter._messages = snapshot
+            return {
+                'is_complete': True,
+                'missing_items': [],
+                'clarifications_needed': [],
+                'error': str(exc),
+            }
+        finally:
+            adapter._messages = snapshot
+    else:
+        try:
+            response = adapter.send(evaluation_prompt)
+        except Exception as exc:
+            return {
+                'is_complete': True,
+                'missing_items': [],
+                'clarifications_needed': [],
+                'error': str(exc),
+            }
+    return _parse_evaluation_response(response)
 
 
 def _build_evaluation_prompt(task: dict, history: List[Dict]) -> str:

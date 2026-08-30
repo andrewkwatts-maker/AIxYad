@@ -57,6 +57,15 @@ VALID_ACTIONS = frozenset([
     'replace_section', 'insert_line', 'remove_section', 'rename_symbol',
     # Merge: consolidate duplicate files into a canonical one
     'merge_files',
+    # Wiki / search / summary helpers exposed to agents
+    'query_wiki', 'find_relevant_files', 'get_summary', 'take_note',
+    'search_by_guid', 'get_json_keys',
+    # File ops
+    'copy_file',
+    # Subtask actions (also exposed to executor)
+    'create_subtask', 'complete_subtask',
+    # Handoff payload between iterations
+    'store_handoff',
 ])
 
 
@@ -697,6 +706,25 @@ class BaseAdapter(ABC):
             parts.append("\n== PERMISSIONS ==")
             for k, v in perms.items():
                 parts.append(f"  {k}: {v}")
+
+        # ── Bottom-of-prompt schema anchor ────────────────────────────────────
+        # Small open-weight models (deepseek-coder 6.7B, mistral 7B, phi4 14B)
+        # lose track of format constraints buried in a 10k-token system prompt.
+        # Repeating the JSON schema right before the response slot keeps them
+        # anchored on the action shape instead of emitting {} or echoing the
+        # planning-quality-gate's {is_complete, missing} shape from earlier turns.
+        parts.append(
+            "\n== RESPOND NOW ==\n"
+            "Output ONE JSON object only. No prose, no code fences, no markdown.\n"
+            "Pick ONE shape:\n"
+            "  Single:  {\"action\":\"<name>\",\"params\":{...},\"reasoning\":\"...\"}\n"
+            "  Batch:   {\"actions\":[{\"action\":\"<name>\",\"params\":{...}},...],"
+            "\"reasoning\":\"...\"}\n"
+            "<name> MUST be from the available_actions list above. "
+            "Do NOT emit {} or {\"is_complete\":...}.\n"
+            "If unsure what to do next, call \"list_files\" or \"read_file\" — "
+            "never empty JSON."
+        )
 
         return "\n".join(parts)
 

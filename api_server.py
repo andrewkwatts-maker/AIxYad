@@ -2549,4 +2549,141 @@ class APIServer:
             except Exception as exc:
                 return {'success': False, 'error': str(exc)}
 
+        # ── Project info (sprint summary, task counts) ────────────────────────
+        @app.get('/api/projects/{project_id}/info')
+        def get_project_info_route(project_id: int):
+            pconn = _open_pconn(project_id)
+            row = _get_global_conn().execute(
+                'SELECT id, name, directory, goal FROM known_projects WHERE id = ?',
+                (project_id,),
+            ).fetchone()
+            info = dict(row) if row else {}
+            try:
+                tasks = pconn.execute(
+                    'SELECT status, COUNT(*) AS n FROM tasks GROUP BY status'
+                ).fetchall()
+                info['task_counts'] = {r['status']: r['n'] for r in tasks}
+            except Exception:
+                info['task_counts'] = {}
+            try:
+                sprint = pconn.execute(
+                    "SELECT id, sprint_number, goal FROM sprints "
+                    "WHERE status = 'active' ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                info['active_sprint'] = dict(sprint) if sprint else None
+            except Exception:
+                info['active_sprint'] = None
+            return info
+
+        # ── Agent logs (per-agent execution history) ──────────────────────────
+        @app.get('/api/projects/{project_id}/agents/{slug}/logs')
+        def get_agent_logs_route(project_id: int, slug: str, limit: int = 20):
+            pconn = _open_pconn(project_id)
+            try:
+                rows = pconn.execute(
+                    'SELECT task_display_id, status, started_at, ended_at, '
+                    'prompt_tokens, completion_tokens, cost_usd '
+                    'FROM agent_executions WHERE agent_slug = ? '
+                    'ORDER BY started_at DESC LIMIT ?',
+                    (slug, limit),
+                ).fetchall()
+                return {'logs': [dict(r) for r in rows]}
+            except Exception:
+                return {'logs': []}
+
+        # ── Provider default + latency history ────────────────────────────────
+        @app.put('/api/providers/{provider_id}/default',
+                 dependencies=[Depends(_verify_token)])
+        def set_provider_default_route(provider_id: int):
+            conn = _get_global_conn()
+            try:
+                conn.execute('UPDATE providers SET is_default = 0')
+                conn.execute('UPDATE providers SET is_default = 1 WHERE id = ?',
+                             (provider_id,))
+                conn.commit()
+                return {'success': True}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
+        @app.get('/api/providers/{provider_name}/latency')
+        def get_provider_latency_route(provider_name: str, limit: int = 10):
+            conn = _get_global_conn()
+            try:
+                rows = conn.execute(
+                    'SELECT latency_ms, status, recorded_at '
+                    'FROM provider_health_log WHERE provider_name = ? '
+                    'ORDER BY recorded_at DESC LIMIT ?',
+                    (provider_name, limit),
+                ).fetchall()
+                return {'history': [dict(r) for r in rows]}
+            except Exception:
+                return {'history': []}
+
+        # ── Sprint task removal ───────────────────────────────────────────────
+        @app.delete('/api/sprint-tasks/{sprint_task_id}',
+                    dependencies=[Depends(_verify_token)])
+        def remove_sprint_task_route(sprint_task_id: int, project_id: int):
+            from automatica_db import remove_task_from_sprint as _rts
+            pconn = _open_pconn(project_id)
+            try:
+                _rts(pconn, sprint_task_id)
+                pconn.commit()
+                return {'success': True}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
+        # ── Parallel task detection ───────────────────────────────────────────
+        @app.get('/api/sprints/{sprint_id}/parallel-tasks')
+        def get_parallel_tasks_route(sprint_id: int, project_id: int):
+            """Return tasks in sprint with no incoming dependency edges."""
+            pconn = _open_pconn(project_id)
+            try:
+                rows = pconn.execute(
+                    'SELECT t.* FROM tasks t '
+                    'JOIN sprint_tasks st ON st.task_id = t.id '
+                    'WHERE st.sprint_id = ?',
+                    (sprint_id,),
+                ).fetchall()
+                tasks = [dict(r) for r in rows]
+                deps = pconn.execute(
+                    'SELECT depends_on_task_id, task_id FROM task_dependencies'
+                ).fetchall()
+                dep_targets = {d['task_id'] for d in deps}
+                parallel = [t for t in tasks if t['id'] not in dep_targets]
+                return {'tasks': parallel}
+            except Exception:
+                return {'tasks': []}
+
+        # ── Manager projects ──────────────────────────────────────────────────
+        @app.get('/api/managers/{manager_id}/projects')
+        def get_manager_projects_route(manager_id: int):
+            from automatica_db import get_manager_projects as _gmp
+            try:
+                return {'projects': _gmp(_get_global_conn(), manager_id)}
+            except Exception:
+                return {'projects': []}
+
+        @app.post('/api/managers/{manager_id}/projects',
+                  dependencies=[Depends(_verify_token)])
+        def add_manager_project_route(manager_id: int, body: dict):
+            from automatica_db import add_manager_project as _amp
+            try:
+                _amp(_get_global_conn(), manager_id,
+                     body.get('directory', body.get('project_dir', '')))
+                _get_global_conn().commit()
+                return {'success': True}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
+        @app.delete('/api/managers/{manager_id}/projects',
+                    dependencies=[Depends(_verify_token)])
+        def remove_manager_project_route(manager_id: int, directory: str):
+            from automatica_db import remove_manager_project as _rmp
+            try:
+                _rmp(_get_global_conn(), manager_id, directory)
+                _get_global_conn().commit()
+                return {'success': True}
+            except Exception as exc:
+                return {'success': False, 'error': str(exc)}
+
         return app

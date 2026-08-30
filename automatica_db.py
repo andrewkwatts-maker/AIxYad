@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # ── Global DB Schema ────────────────────────────────────────────────
 
@@ -1134,6 +1134,13 @@ def migrate_project(conn: sqlite3.Connection, from_version: int = None):
         _add_column_if_missing(conn, 'tasks', 'last_failure_at', 'TEXT DEFAULT NULL')
         conn.commit()
         _set_schema_version(conn, 6)
+
+    if version < 7:
+        # v7: lamport-based dependency gating used by sprint_runner.execute_sprint
+        _add_column_if_missing(conn, 'tasks', 'lamport', 'INTEGER DEFAULT NULL')
+        _add_column_if_missing(conn, 'tasks', 'depends_lamport', 'INTEGER DEFAULT NULL')
+        conn.commit()
+        _set_schema_version(conn, 7)
 
     # Retry-cap: ensure failure_count / last_failure_at exist for older project DBs
     _add_column_if_missing(conn, 'tasks', 'failure_count', 'INTEGER NOT NULL DEFAULT 0')

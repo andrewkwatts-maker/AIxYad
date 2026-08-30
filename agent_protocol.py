@@ -761,6 +761,19 @@ class AgentProtocol:
                 _is_batch = len(actions_iter) > 1
                 _prefix = f"batch[{sub_idx}] " if _is_batch else ""
 
+                # Trace every dispatched action so failures aren't silent
+                _ptrack = ''
+                if action in ('write_file', 'edit_file', 'read_file'):
+                    _ptrack = f" path={params.get('path','?')}"
+                elif action == 'run_command':
+                    _ptrack = f" cmd={(params.get('command','') or '')[:60]}"
+                elif action == 'step_done':
+                    _ptrack = f" summary={(params.get('summary','') or '')[:60]}"
+                elif action == 'need_help':
+                    _ptrack = f" reason={(params.get('reason','') or '')[:60]}"
+                print(f"  [iter={i+1}] {_prefix}{action}{_ptrack}",
+                      flush=True)
+
                 if action == 'step_done':
                     # ── Stub-content guard ─────────────────────────────────
                     # Caught the Pong-run failure mode: agent claims done with
@@ -1244,6 +1257,18 @@ class AgentProtocol:
         for sub_idx, sub in enumerate(actions_iter):
             action = sub.get('action', 'need_help')
             params = sub.get('params', {}) or {}
+
+            # Trace dispatched action (3-phase path)
+            _ptrack = ''
+            if action in ('write_file', 'edit_file', 'read_file'):
+                _ptrack = f" path={params.get('path','?')}"
+            elif action == 'run_command':
+                _ptrack = f" cmd={(params.get('command','') or '')[:60]}"
+            elif action == 'step_done':
+                _ptrack = f" summary={(params.get('summary','') or '')[:60]}"
+            elif action == 'need_help':
+                _ptrack = f" reason={(params.get('reason','') or '')[:60]}"
+            print(f"  [3p batch[{sub_idx}]] {action}{_ptrack}", flush=True)
 
             if action == 'step_done':
                 # Run the same stub guard that protects the iterative loop.
@@ -1776,6 +1801,21 @@ class AgentProtocol:
             for sub_idx, sub in enumerate(actions_iter):
                 action = sub.get('action', 'need_help')
                 params = sub.get('params', {}) or {}
+
+                # Trace dispatched action so failures aren't silent (atomic path)
+                _ptrack = ''
+                if action in ('write_file', 'edit_file', 'read_file'):
+                    _ptrack = f" path={params.get('path','?')}"
+                elif action == 'run_command':
+                    _ptrack = f" cmd={(params.get('command','') or '')[:60]}"
+                elif action == 'step_done':
+                    _ptrack = f" summary={(params.get('summary','') or '')[:60]}"
+                elif action == 'need_help':
+                    _ptrack = f" reason={(params.get('reason','') or '')[:60]}"
+                _is_batch = len(actions_iter) > 1
+                _prefix = f"batch[{sub_idx}] " if _is_batch else ""
+                print(f"  [step={step_num} iter={i+1}] {_prefix}{action}{_ptrack}",
+                      flush=True)
 
                 if action == 'step_done':
                     terminal_result = {

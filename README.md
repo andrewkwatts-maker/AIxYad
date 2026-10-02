@@ -178,6 +178,8 @@ agents/               Agent role definitions (markdown, loaded at runtime)
 standards/            Language-specific coding standards (markdown, loaded at runtime)
 ```
 
+Performance: [RUST-ACCELERATION.md](RUST-ACCELERATION.md) lists the hot paths that will move to a Rust core and the first slice to port.
+
 ---
 
 ## Wiki Index

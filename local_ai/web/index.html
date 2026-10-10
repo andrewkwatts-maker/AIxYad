@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local AI</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1c232e;--muted:#5d6876;--line:#dde2e8;--accent:#2f6fc8;--ok:#2e8b57;--warn:#b7791f;--bad:#c0392b;--code:#eef1f5}
+@media (prefers-color-scheme: dark){:root{--bg:#12161c;--card:#1a2028;--ink:#e6e9ee;--muted:#98a3b0;--line:#2a323c;--accent:#6aa2f0;--ok:#5fc08b;--warn:#e0a84a;--bad:#ef6b5e;--code:#222932}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,"Segoe UI",sans-serif}
+main{max-width:860px;margin:0 auto;padding:16px 16px 48px}
+h1{font-size:20px;margin:0}h2{font-size:15px;margin:22px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:8px 0}
+.row{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.muted{color:var(--muted);font-size:13px}
+.pill{display:inline-block;border-radius:999px;padding:1px 9px;font-size:12px;border:1px solid var(--line)}
+.ready,.done{color:var(--ok);border-color:var(--ok)}.starting,.draining,.planning,.running,.awaiting_approval,.queued{color:var(--warn);border-color:var(--warn)}
+.error,.failed,.unreachable{color:var(--bad);border-color:var(--bad)}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+textarea,input,select{font:inherit;width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;background:var(--bg);color:var(--ink)}
+textarea{min-height:90px;resize:vertical}
+label{display:block;font-size:13px;color:var(--muted);margin:8px 0 3px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+.job{cursor:pointer}.job:hover{border-color:var(--accent)}
+.log{background:var(--code);border-radius:8px;padding:8px;max-height:55vh;overflow:auto;font:12.5px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+.ev{margin:0 0 6px}.ev .k{color:var(--muted)}.ev.error{color:var(--bad)}
+details summary{cursor:pointer;color:var(--accent)}
+.step{border-top:1px solid var(--line);padding:8px 0}.step:first-child{border-top:0}
+</style>
+</head>
+<body><main>
+<header><h1>Local AI</h1><span id="conn" class="pill">connecting</span></header>
+
+<h2>Model servers</h2>
+<div id="backends"></div>
+
+<h2>New task</h2>
+<div class="card">
+  <label for="task">Task</label><textarea id="task" placeholder="Describe the change you want"></textarea>
+  <label for="cwd">Project folder (on the PC)</label><input id="cwd" placeholder="H:\Projects\...">
+  <div class="grid">
+    <div><label for="mode">Mode</label><select id="mode"><option value="plan_and_run">Plan, then run</option><option value="plan">Plan only</option><option value="run">Run directly</option></select></div>
+    <div><label for="review">Review the plan</label><select id="review"><option value="1">Yes</option><option value="0">No</option></select></div>
+  </div>
+  <p class="row"><button class="primary" id="submit">Start</button><span id="submitMsg" class="muted"></span></p>
+</div>
+
+<h2>Jobs</h2>
+<div id="jobs"></div>
+<div id="detail"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+let selected = null, nextSeq = 0, polling = null;
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...options });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data.error && data.error.message) || res.statusText);
+  return data;
+}
+
+function pill(state) { return el('span', 'pill ' + state, state.replace('_', ' ')); }
+
+async function refreshStatus() {
+  try {
+    const status = await api('/gateway/status');
+    $('conn').replaceWith(Object.assign(pill('ready'), { id: 'conn', textContent: 'connected' }));
+    const box = $('backends');
+    if (box.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') return;  // mid-choice
+    box.replaceChildren();
+    for (const b of status.backends) {
+      const card = el('div', 'card');
+      const head = el('div', 'row'); head.append(el('strong', '', b.name), pill(b.state), el('span', 'muted', b.model));
+      const stats = el('div', 'row muted');
+      stats.append(el('span', '', `slots ${b.slots_busy}/${b.slots_total}`), el('span', '', `queued ${b.queued}`),
+        el('span', '', `answers ${b.last_decode_tps ?? '-'} tok/s`), el('span', '', `prompts ${b.last_prefill_tps ?? '-'} tok/s`));
+      card.append(head, stats);
+      if (b.error) card.append(el('div', 'muted', b.error));
+      const vars = b.vars || {};
+      if (vars.ctx) stats.append(el('span', '', `context ${Math.round(vars.ctx / 1024)}k x ${vars.slots || 1} · cache ${vars.cache || '-'}`));
+      if (b.managed) {
+        const actions = el('div', 'row');
+        const pick = (options, current) => {
+          const s = el('select'); s.style.width = 'auto';
+          for (const [value, label] of options) { const o = el('option', '', label); o.value = value; s.append(o); }
+          if (current) s.value = String(current);
+          return s;
+        };
+        const ctx = pick([[32768, '32k'], [65536, '64k'], [131072, '128k'], [262144, '256k']], vars.ctx || 65536);
+        const agents = pick([[1, '1 agent'], [2, '2 agents'], [4, '4 agents']], vars.slots || 2);
+        const cache = pick([['q8_0', '8-bit cache'], ['q4_0', '4-bit cache']], vars.cache || 'q8_0');
+        const start = el('button', '', 'Load'), stop = el('button', '', 'Unload');
+        start.onclick = () => api(`/gateway/backends/${b.name}/start`, { method: 'POST',
+          body: JSON.stringify({ vars: { ctx: Number(ctx.value), slots: Number(agents.value), cache: cache.value } }) }).then(refreshStatus, alert);
+        actions.append(ctx, agents, cache);
+        stop.onclick = () => api(`/gateway/backends/${b.name}/stop`, { method: 'POST', body: '{}' }).then(refreshStatus, alert);
+        actions.append(start, stop); card.append(actions);
+      }
+      box.append(card);
+    }
+  } catch (e) {
+    $('conn').replaceWith(Object.assign(pill('error'), { id: 'conn', textContent: 'offline' }));
+  }
+}
+
+async function refreshJobs() {
+  try {
+    const jobs = await api('/gateway/jobs');
+    const box = $('jobs'); box.replaceChildren();
+    if (!jobs.length) box.append(el('p', 'muted', 'No jobs yet.'));
+    for (const j of jobs.slice(0, 20)) {
+      const card = el('div', 'card job');
+      const head = el('div', 'row'); head.append(pill(j.status), el('strong', '', j.title));
+      card.append(head, el('div', 'muted', `${j.steps_done}/${j.steps_total} steps · ${j.created.replace('T', ' ')} · ${j.cwd}`));
+      card.onclick = () => openJob(j.id);
+      box.append(card);
+    }
+  } catch (e) { /* status pill already shows offline */ }
+}
+
+async function openJob(id) {
+  selected = id; nextSeq = 0;
+  const job = await api(`/gateway/jobs/${id}`);
+  const box = $('detail'); box.replaceChildren();
+  const card = el('div', 'card');
+  const head = el('div', 'row'); head.append(pill(job.status), el('strong', '', job.title));
+  card.append(head);
+  if (job.worktree) card.append(el('div', 'muted', 'Worktree: ' + job.worktree));
+  if (job.error) card.append(el('div', 'ev error', job.error));
+  if (job.plan_summary) card.append(el('p', '', job.plan_summary));
+  for (const s of job.plan) {
+    const step = el('div', 'step');
+    const sh = el('div', 'row'); sh.append(pill(s.status), el('strong', '', `${s.id}. ${s.title}`));
+    step.append(sh);
+    const d = el('details'); d.append(el('summary', '', 'instructions'), el('div', 'muted', s.instructions));
+    if (s.files.length) d.append(el('div', 'muted', 'files: ' + s.files.join(', ')));
+    step.append(d);
+    if (s.summary) step.append(el('div', 'muted', s.summary));
+    card.append(step);
+  }
+  const actions = el('div', 'row');
+  if (job.status === 'awaiting_approval') {
+    const ok = el('button', 'primary', 'Approve plan');
+    ok.onclick = () => api(`/gateway/jobs/${id}/approve`, { method: 'POST', body: '{}' }).then(() => openJob(id), alert);
+    actions.append(ok);
+  }
+  if (['queued', 'planning', 'awaiting_approval', 'running'].includes(job.status)) {
+    const cancel = el('button', '', 'Cancel');
+    cancel.onclick = () => api(`/gateway/jobs/${id}/cancel`, { method: 'POST', body: '{}' }).then(() => openJob(id), alert);
+    actions.append(cancel);
+  }
+  card.append(actions);
+  const log = el('div', 'log'); log.id = 'log';
+  box.append(card, log);
+  pollEvents(id);
+}
+
+async function pollEvents(id) {
+  if (polling === id) return;
+  polling = id;
+  let firstPage = true;  // the first page replays history; only later status changes re-render
+  while (selected === id) {
+    try {
+      const page = await api(`/gateway/jobs/${id}/events?after=${nextSeq}`);
+      const log = $('log');
+      for (const ev of page.events) {
+        const line = el('div', 'ev ' + ev.kind);
+        line.append(el('span', 'k', `${ev.ts.slice(11)} ${ev.step || 'job'} ${ev.kind}: `));
+        if (ev.kind === 'tool_use' && ev.data) {
+          const d = el('details'); d.append(el('summary', '', ev.data.name), el('div', '', JSON.stringify(ev.data.input, null, 1)));
+          line.append(d);
+        } else line.append(document.createTextNode(ev.text));
+        log.append(line);
+      }
+      if (page.events.length) { nextSeq = page.next; log.scrollTop = log.scrollHeight; }
+      if (page.status && !['queued', 'planning', 'awaiting_approval', 'running'].includes(page.status) && !page.events.length) break;
+      if (!firstPage && page.events.some(e => e.kind === 'status' || e.kind === 'plan')) { polling = null; return openJob(id); }
+      firstPage = false;
+    } catch (e) { await new Promise(r => setTimeout(r, 3000)); }
+  }
+  if (polling === id) polling = null;
+}
+
+$('submit').onclick = async () => {
+  const body = { task: $('task').value, cwd: $('cwd').value, mode: $('mode').value, review_plan: $('review').value === '1' };
+  try { localStorage.setItem('cwd', body.cwd); } catch (e) {}
+  try {
+    const { id } = await api('/gateway/jobs', { method: 'POST', body: JSON.stringify(body) });
+    $('submitMsg').textContent = 'Started ' + id; $('task').value = '';
+    await refreshJobs(); openJob(id);
+  } catch (e) { $('submitMsg').textContent = e.message; }
+};
+
+try { $('cwd').value = localStorage.getItem('cwd') || ''; } catch (e) {}
+refreshStatus(); refreshJobs();
+setInterval(() => { if (!document.hidden) { refreshStatus(); refreshJobs(); } }, 4000);
+</script>
+</body></html>

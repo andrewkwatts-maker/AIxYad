@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local AI Gateway</title>
+<style>
+:root{--bg:#f7f8fa;--card:#fff;--ink:#1d2430;--muted:#5f6b7a;--line:#dde2e8;--accent:#2f6fc8;--ok:#2e8b57;--warn:#b7791f;--bad:#c0392b;--code:#eef1f5}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#13171d;--card:#1b2129;--ink:#e6e9ee;--muted:#9aa5b1;--line:#2b333d;--accent:#6aa2f0;--ok:#5fc08b;--warn:#e0a84a;--bad:#ef6b5e;--code:#232a33}}
+:root[data-theme="dark"]{--bg:#13171d;--card:#1b2129;--ink:#e6e9ee;--muted:#9aa5b1;--line:#2b333d;--accent:#6aa2f0;--ok:#5fc08b;--warn:#e0a84a;--bad:#ef6b5e;--code:#232a33}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 system-ui,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:28px 16px 60px}
+h1{font-size:26px;margin:0 0 4px}h2{font-size:19px;margin:34px 0 10px}h3{font-size:16px;margin:18px 0 6px}
+p.lede{color:var(--muted);margin:0 0 18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:12px 0;overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+code,pre{background:var(--code);border-radius:6px;font:13px/1.5 ui-monospace,Consolas,monospace}
+code{padding:1px 5px}pre{padding:12px;overflow-x:auto;white-space:pre}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+.note{border-left:3px solid var(--warn);padding:6px 12px;background:var(--card);margin:12px 0}
+.good{border-left:3px solid var(--ok);padding:6px 12px;background:var(--card);margin:12px 0}
+nav.toc{font-size:14px;columns:2;gap:24px}nav.toc a{color:var(--accent);text-decoration:none}
+.flow{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;font-size:13px}
+.flow div{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--card)}.flow b{display:block}
+ol li,ul li{margin:5px 0}
+</style>
+</head>
+<body><main>
+<h1>Local AI gateway: how to</h1>
+<p class="lede">Run Qwen3.8-Flash-Next and smaller models on this PC (RTX 3070 Ti 8 GB, 128 GB RAM) and a second PC,
+drive them from VS Code, Claude Code or a phone, and let a big planner model hand steps to worker agents.
+Package: <code>Automatica/local_ai</code>. API: <code>local_ai/API.md</code>. VS Code extension: the <code>Automatica-Code</code> repo.</p>
+
+<nav class="toc card">
+<a href="#shape">1. How it fits together</a><br><a href="#results">2. Measured on this PC</a><br>
+<a href="#pc">3. Make this PC fast</a><br><a href="#run">4. Run the gateway</a><br>
+<a href="#agents">5. Planner and worker agents</a><br><a href="#vscode">6. VS Code</a><br>
+<a href="#phone">7. Phone and browser</a><br><a href="#lan">8. The second PC</a><br>
+<a href="#bench">9. Benchmark a change</a><br><a href="#trouble">10. Troubleshooting</a>
+</nav>
+
+<h2 id="shape">1. How it fits together</h2>
+<div class="card">
+<div class="flow">
+<div><b>Clients</b>VS Code extension, Claude Code / Qwen Code, the phone page, any OpenAI- or Anthropic-style tool</div>
+<div><b>Gateway</b> <code>python -m local_ai.gateway</code> on 127.0.0.1:8770: token auth, routes by role, queues per model server, runs jobs</div>
+<div><b>This PC's GPU (group gpu0)</b>the big model (dense tensors on the GPU, experts in RAM) or a small model fully on the GPU, one at a time</div>
+<div><b>Second PC</b>a small model, vision or image model on the GTX 970, reached over Tailscale</div>
+</div>
+<ul>
+<li><b>Routes</b> are roles named in the request's <code>model</code> field: <code>planner</code> (big model, thinking on),
+<code>worker</code> (thinking off, capped output), plus any you add (<code>fast</code>, <code>vision</code>, ...).</li>
+<li><b>One model per GPU at a time.</b> The 8 GB card cannot hold the big model's dense tensors and a fast small model
+together, so backends in one <code>group</code> are swapped. A loaded model serves all of its queued work, including
+work that arrives meanwhile, before it is unloaded. A swap happens when its queue is empty, or when another model's
+request has waited longer than <code>swap.max_hold_s</code>; the loaded model then stops taking new work, finishes
+what is running, and hands over.</li>
+<li><b>The network carries whole requests, not layers.</b> Splitting one model's layers across two PCs (llama.cpp RPC)
+adds a network round trip per layer group per token, has no authentication, and does not speed up answering, only
+capacity. Over Wi-Fi it would be slower than the 3070 Ti alone. Each PC serves its own models instead.</li>
+</ul>
+</div>
+
+<h2 id="results">2. Measured on this PC</h2>
+<div class="card" id="results-body">
+<p>2026-10-10, Qwen3.8-Flash-Next UD-Q3_K_XL (84 GB), RAM at 3600 MT/s, Windows 11, Unsloth's llama.cpp build 11505.
+Tokens per second; "answers" is one request with a 512-token prompt; "long" is a 16k-token prompt then 128 new tokens.
+Other work on the PC used 5&ndash;36% CPU during these runs.</p>
+<table>
+<thead><tr><th>Setup</th><th>Dense layers on GPU</th><th>Answers</th><th>4k prompt</th><th>2 agents together</th><th>Long: answers / prompt</th><th>VRAM spilled</th></tr></thead>
+<tbody>
+<tr><td>Unsloth Studio's launch (256k context, <code>--fit</code>, n-gram speculation), from its own log</td><td>14 of 49</td><td class="bad">4.9&ndash;5.1</td><td>~200</td><td>&ndash;</td><td class="bad">~5 at 134k / ~200</td><td>&ndash;</td></tr>
+<tr><td>Same build, 8k context, from its own log</td><td>32 of 49</td><td class="warn">7.7&ndash;8.6</td><td>~200</td><td>&ndash;</td><td>&ndash;</td><td>&ndash;</td></tr>
+<tr><td>All 49 layers' dense tensors forced onto the GPU (<code>--cpu-moe</code>; <code>--fit</code> silently gave up), experts in RAM, 2 &times; 16k, batch 512</td><td>49 of 49</td><td class="ok">15.0</td><td>248</td><td>8.8 each (17.5)</td><td>9.3 / 35</td><td class="warn">0.7 GB</td></tr>
+<tr><td>same, batch 256</td><td>49 of 49</td><td class="ok">16.0</td><td>136</td><td>8.6 each</td><td class="ok">15.6 / 120</td><td class="warn">1.0 GB</td></tr>
+<tr><td>same, batch 1024</td><td>49 of 49</td><td class="ok">15.2</td><td class="ok">319</td><td>8.6 each</td><td>8.2 / 276</td><td class="warn">1.0 GB</td></tr>
+<tr><td>same, plus an expert cache in spare VRAM</td><td>49 of 49</td><td>15.1</td><td>200</td><td class="bad">4.8 each</td><td class="bad">5.1 / 50</td><td class="warn">1.0 GB</td></tr>
+<tr><td>4 agents &times; 16k at 4-bit, 384 MB margin</td><td colspan="6" class="bad">out of VRAM at start-up</td></tr>
+</tbody></table>
+<ul>
+<li><b>Dense tensors on the GPU tripled answer speed</b> (5 &rarr; 15&ndash;16 tok/s). The 256k context Unsloth asked for left no VRAM for them.</li>
+<li><b>These rows over-filled the card.</b> <code>--fit</code> does nothing when <code>--cpu-moe</code> or <code>-ot</code> is also given ("tensor_buft_overrides already set by user, abort"), so every layer went to the GPU and the driver paged 0.7&ndash;1 GB to system RAM. Answers stayed fast because the driver evicts the least-used memory first; long prompts paid for it. The profiles now use <code>--fit</code> alone.</li>
+<li><b>Two agents at once share the speed</b>: ~8.7 tok/s each, ~17.5 together, only ~16% more than one. With 512 experts per layer two agents rarely read the same experts, so RAM bandwidth is the limit. Faster RAM is the lever (section 3).</li>
+<li><b>An expert cache does not pay on 8 GB</b>: it takes VRAM the context and compute buffers need.</li>
+<li><b>VRAM spill makes long prompts erratic</b> (35 vs 120 vs 276 tok/s at 16k, depending on which buffer the driver pushed to system RAM). Fix the spill (section 3) before tuning further.</li>
+</ul>
+</div>
+
+<h2 id="context">Context window: choose it when you load</h2>
+<div class="card">
+<p>Coding agents need room: Claude Code's own instructions are 15&ndash;20k tokens before any of your code. The big
+model's context is set when it is loaded (VS Code's <i>Start Model Server</i>, the phone page's <i>Load</i>, or
+<code>POST /gateway/backends/big/start {"vars": {...}}</code>), not baked in:</p>
+<table>
+<thead><tr><th>Variable</th><th>Meaning</th><th>Default</th></tr></thead>
+<tbody>
+<tr><td><code>ctx</code></td><td>context per agent, tokens</td><td>65536</td></tr>
+<tr><td><code>slots</code></td><td>agents served at once. The cache is one shared pool of <code>ctx &times; slots</code> tokens, and any one agent may use all of it while the others are idle; <code>ctx</code> is the fair share when all are busy.</td><td>2</td></tr>
+<tr><td><code>cache</code></td><td><code>q8_0</code> (best) or <code>q4_0</code> (half the memory)</td><td>q8_0</td></tr>
+<tr><td><code>ub</code></td><td>prompt-reading batch (bigger reads long prompts faster but needs VRAM)</td><td>256</td></tr>
+</tbody></table>
+<p><b>Why big contexts are affordable here:</b> only 12 of the model's 48 layers keep a growing attention cache; the other 36
+are DeltaNet layers with a fixed-size state. 1k tokens of context cost about 16 MB at 8-bit, 9 MB at 4-bit, so 128k is
+~1.1 GB at 4-bit. That memory comes out of the GPU, so <code>--fit</code> moves some layers' dense tensors to the CPU to make
+room (a bit slower), or use <code>big-kv-ram</code>: the cache lives in RAM, every dense layer stays on the GPU, and the 12
+attention layers read their cache from RAM.</p>
+<div id="context-results">
+<p><b>Measured so far (2026-10-10):</b> with <code>--fit</code> doing the placement and a 1,152 MB margin, 2 agents &times; 32k at 8-bit
+puts 29 of 49 layers' dense tensors on the GPU and reads a 32k prompt at ~125&ndash;140 tok/s. The full context sweep
+(64k, 128k at 4-bit, 128k with the cache in RAM, 256k for one agent) has not finished cleanly yet: other sessions' builds
+held the CPU at 50&ndash;100% and pushed the model's 27 GB n-gram table out of RAM (answers fell to 1.5 tok/s). Rerun it
+on a quiet PC: <code>python -m local_ai.bench big-32k big big-128k-q4 big-kv-ram-128k big-256k-1 --deep 32768</code>.</p>
+<p class="note">Locking the model in RAM (<code>load: mlock</code> or <code>mmap+mlock</code>) failed on this PC while builds ran:
+Windows' commit limit (127 GB RAM + a 7 GB page file) was used up. A larger page file on D: raises the limit; the model
+still needs ~82 GB of real RAM beside everything else.</p>
+</div>
+</div>
+
+<h2 id="pc">3. Make this PC fast</h2>
+<div class="card">
+<table>
+<thead><tr><th>Change</th><th>Why</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td><b>RAM at 4800&ndash;5600 MT/s instead of 3600</b></td><td>Answer speed is set by RAM bandwidth: every token reads ~1 GB of experts. The four 32 GB DDR5-6000 sticks run at 3600, AMD's official speed for 4 dual-rank sticks. Recent BIOSes train 4 sticks much higher.</td><td>Update the B650M AORUS ELITE AX BIOS from F21 (2024) to the current release (F42d, AGESA 1.3.0.1d, for board revision 1.0/1.1 &mdash; check yours), enable EXPO, then set 4800, test, and step up to 5200/5600. Turn Memory Context Restore off if training loops. Expect up to +35&ndash;55% answer speed.</td></tr>
+<tr><td><b>No silent VRAM spill</b></td><td>When CUDA asks for more VRAM than is free, the Windows driver quietly puts the rest in system RAM over PCIe. Prompt reading at long context collapses.</td><td>NVIDIA Control Panel &rarr; Manage 3D settings &rarr; <i>CUDA &ndash; Sysmem Fallback Policy</i> &rarr; <i>Prefer No Sysmem Fallback</i> (globally or for <code>llama-server.exe</code>). The benchmark's <code>gpu_spill_mib</code> shows if it happens.</td></tr>
+<tr><td><b>Free VRAM for the model</b></td><td>Before loading anything, Windows and apps held ~1.7&ndash;1.9 GB of the 8 GB: the desktop (dwm) ~1.5 GB with many windows open, NVIDIA Overlay up to 1.9 GB, browsers, Discord.</td><td>NVIDIA App &rarr; Settings &rarr; Overlay off; close idle windows (a dozen Paint windows were open); turn off hardware acceleration in Discord/Opera if you like.</td></tr>
+<tr><td><b>Let <code>--fit</code> place tensors, alone</b></td><td><code>--fit on</code> moves every expert to RAM and then fills the GPU with dense layers up to a safety margin. Adding <code>--cpu-moe</code> or <code>-ot</code> makes it give up silently, and pinning <code>-ngl 99</code> over-fills the card.</td><td>The <code>big</code> profiles in <code>local_ai/local_ai.yaml</code> (<code>fit_margin</code> is tunable).</td></tr>
+<tr><td><b>Model above builds</b></td><td>This PC usually has other sessions compiling. At normal priority a C++ build took 9 of 12 cores from the model.</td><td><code>prio</code> variable (default 1 = above normal) sets <code>--prio</code>/<code>--prio-batch</code>.</td></tr>
+<tr><td><b>Short context per slot, not 256k</b></td><td>Unsloth Studio launched with <code>-c 262144</code>, which forced 35 of 49 layers' dense tensors onto the CPU (5 tok/s). 32&ndash;64k shared between agents keeps them on the GPU.</td><td>Profile choice.</td></tr>
+<tr><td><b>No n-gram speculation for this model</b></td><td><code>--spec-default</code> (n-gram drafts) was accepted 0&ndash;50% of the time here; each rejected draft costs a batch through 48 layers of CPU experts.</td><td><code>--spec-type none</code> (it does help the small model fully on the GPU).</td></tr>
+<tr><td><b>Threads = 12</b></td><td>The Ryzen 9 7900 has 12 physical cores and no efficiency cores.</td><td><code>-t 12</code> (the default picks this too).</td></tr>
+<tr><td><b>Projects off the old hard disk</b></td><td>H: is a 2012 WD Green 5400 rpm disk: agents read, grep and run git there constantly. A directory walk of one repo took minutes.</td><td>Move active repos to an SSD (F: SATA SSD or D: NVMe) with the portfolio tool when convenient.</td></tr>
+<tr><td><b>AI data on D:</b></td><td>C: was 12 GB from full. D: is the same NVMe.</td><td>Done: Ollama models are in <code>D:\Models\ollama</code> (<code>OLLAMA_MODELS</code>, plus a junction at the old path so Unsloth's links still work). GGUFs live in <code>D:\Models</code>.</td></tr>
+</tbody></table>
+<p class="note">Unsloth's llama.cpp build needs the CUDA 13 runtime DLLs from Unsloth's bundled PyTorch on PATH, or it
+silently runs on the CPU only. <code>~/.automatica/local_ai.yaml</code> sets <code>dll_dirs</code> for that.</p>
+</div>
+
+<h2 id="run">4. Run the gateway</h2>
+<div class="card"><ol>
+<li>Machine paths go in <code>%USERPROFILE%\.automatica\local_ai.yaml</code> (merged over the packaged
+<code>local_ai/local_ai.yaml</code>):
+<pre>defaults:
+  binary: C:/Users/Andrew/.unsloth/llama.cpp/build/bin/Release/llama-server.exe
+  model: D:/Models/Qwen3.8-Flash-Next-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00003.gguf
+  dll_dirs: [C:/Users/Andrew/.unsloth/studio/unsloth_studio/Lib/site-packages/torch/lib]</pre></li>
+<li>Start it from the Automatica folder: <code>python -m local_ai.gateway</code>. The token is created in
+<code>~/.automatica/gateway.token</code>; <code>python -m local_ai.gateway --print-token</code> shows it.</li>
+<li>The big model loads on the first request (about 70&ndash;80 s), or press <i>Load</i> in VS Code or on the phone page.</li>
+<li>Any OpenAI- or Anthropic-style client can use it: base URL <code>http://127.0.0.1:8770</code> (Anthropic) or
+<code>http://127.0.0.1:8770/v1</code> (OpenAI), key = the token, model = <code>planner</code> or <code>worker</code>.
+Unsloth Studio can use it too: Settings &rarr; Connections.</li>
+<li>To add the fast small model to the GPU group, add to the user file:
+<pre>gateway:
+  backends:
+    small-gpu: {profile: coder7b-gpu, group: gpu0}
+  routes:
+    fast: {backend: small-gpu, thinking: false}</pre>
+Point <code>worker</code> at <code>small-gpu</code> to have every worker step use it; the scheduler then loads the big
+model for planning and swaps to the small one for the steps.</li>
+</ol></div>
+
+<h2 id="agents">5. Planner and worker agents</h2>
+<div class="card">
+<p>A job (<code>POST /gateway/jobs</code>, the VS Code panel or the phone page) runs a coding CLI headless:</p>
+<ol>
+<li><b>Plan</b>: Claude Code with read-only tools on the <code>planner</code> route explores the repository and returns a JSON plan of up to 8 steps, each with complete instructions and the files it will edit.</li>
+<li><b>Review</b> (optional): the job waits; edit, remove or approve the steps.</li>
+<li><b>Delegate</b>: each step runs as its own Claude Code process on the <code>worker</code> route, in one git worktree per job
+(<code>&lt;repo&gt;.agents\&lt;job&gt;</code> beside the repo, branch <code>claude/local-ai/&lt;job&gt;</code>, never pushed by the ecosystem sync).
+Steps run in parallel when their dependencies are done and their files do not overlap.</li>
+<li><b>Review the result</b>: nothing is committed. The job's last event lists the changed files; open the worktree, check the diff, merge what you want.</li>
+</ol>
+<p>Each CLI runs with its own config folder (<code>~/.automatica/cli/claude</code>), so your normal Claude Code sign-in, settings and history are untouched,
+and gets the gateway address and token only in its environment. Shell commands are off unless the job allows them.</p>
+<p class="note">Claude Code is proprietary: each user installs it and accepts Anthropic's terms; pointing your own install at a local
+server is the documented LLM-gateway setup. Qwen Code (Apache 2.0) is supported by the job runner but was not installed when this was written.</p>
+</div>
+
+<h2 id="vscode">6. VS Code</h2>
+<div class="card">
+<p>Build and install the extension from the <code>Automatica-Code</code> repo: <code>build.bat</code>, then
+<code>code --install-extension automatica-code-0.1.0.vsix</code>. Commands: <i>Automatica: Open Local AI Panel</i>,
+<i>New Task</i> (uses the editor selection if there is one), <i>Start/Stop Model Server</i>, <i>Set Gateway Token</i>,
+<i>Copy Phone URL</i>. The status bar shows the model's last answer speed and busy slots. Settings start with <code>automatica.</code>.</p>
+</div>
+
+<h2 id="phone">7. Phone and browser</h2>
+<div class="card"><ol>
+<li>Install Tailscale on this PC and the phone (free Personal plan) and sign both in to the same account.</li>
+<li>Share the gateway inside your tailnet only, with HTTPS: <code>tailscale serve --bg 8770</code>.
+It stays bound to 127.0.0.1; Tailscale forwards to it, and nothing is opened to the internet.</li>
+<li>On the phone open <code>https://&lt;this-pc&gt;.&lt;tailnet&gt;.ts.net/ui?token=&lt;token&gt;</code> once. It sets a cookie and the address
+becomes plain <code>/ui</code>; bookmark that. The page shows the model servers (load/unload), jobs, plan approval and live agent output, and starts new tasks.</li>
+</ol>
+<p>The Automatica-App phone client can use the same gateway API later; the page needs nothing installed.</p></div>
+
+<h2 id="lan">8. The second PC (GTX 970, 32 GB RAM, Wi-Fi)</h2>
+<div class="card">
+<p>Use it for whole requests that would otherwise take the 3070 Ti away from the big model:</p>
+<table>
+<thead><tr><th>Job</th><th>Model (fits ~3.5 GB of the 970's fast VRAM)</th><th>Server</th></tr></thead>
+<tbody>
+<tr><td>Fast worker / autocomplete</td><td>a 3B coder at Q4 (~2 GB), e.g. Qwen2.5-Coder-3B-Instruct</td><td>llama-server (Vulkan build)</td></tr>
+<tr><td>Look at screenshots / images</td><td>moondream (1.7 GB, already in Ollama) or a 3&ndash;4B vision model at Q4 with its mmproj</td><td>llama-server <code>--mmproj</code></td></tr>
+<tr><td>Make images</td><td>SD 1.5, or Z-Image-Turbo at Q3/Q4 with CPU offload (tens of seconds per image)</td><td>stable-diffusion.cpp <code>sd-server</code> (OpenAI-style <code>/v1/images</code>)</td></tr>
+</tbody></table>
+<ol>
+<li>On the second PC: install Tailscale, unzip llama.cpp's <b>Vulkan</b> build (CUDA 13 no longer supports the 970's Maxwell chip), copy
+<code>local_ai/node/start-node.ps1</code> and run it with a model. It binds to the Tailscale address only and creates an API key file.</li>
+<li>Copy the key file to this PC and add the backend:
+<pre>gateway:
+  backends:
+    lan-small: {url: "http://&lt;second-pc&gt;:11437", model: lan-small, slots: 1,
+                api_key_file: ~/.automatica/node.key}
+  routes:
+    fast: {backend: lan-small, thinking: false}</pre></li>
+<li>The gateway checks its health every 15 s and shows it as <i>unreachable</i> when that PC is off or busy.</li>
+</ol>
+<p class="note">It is someone else's everyday PC: start the node only when it is free (or schedule it), and keep its context small (16k) so it stays within 4 GB.</p>
+</div>
+
+<h2 id="bench">9. Benchmark a change</h2>
+<div class="card">
+<pre>python -m local_ai.bench --list
+python -m local_ai.bench fit-32k fit-32k-ub256        # load, measure, unload each in turn</pre>
+<p>Results append to <code>~/.automatica/bench/results.jsonl</code>; server logs are in <code>~/.automatica/bench/logs</code>.
+Tests: one answer (512-token prompt, 192 tokens), a 4k prompt, 4 agents at once, and a 16k-deep context. Each result records the
+background CPU load before each test, VRAM requested versus really held (<code>gpu_spill_mib</code>), and where the layers went.
+Add a profile to the user file (it can <code>extends:</code> another) to try a new flag. Stop the gateway first: only one copy of the model fits in RAM.</p>
+</div>
+
+<h2 id="trouble">10. Troubleshooting</h2>
+<div class="card"><table>
+<tbody>
+<tr><td>Server runs but the GPU stays idle</td><td><code>llama-server --list-devices</code> shows <i>none</i>: the CUDA DLLs are not on PATH (<code>dll_dirs</code>).</td></tr>
+<tr><td>Prompt reading very slow at long context</td><td>VRAM spill: check <code>gpu_spill_mib</code>, set the sysmem fallback policy, close VRAM users, or use a smaller <code>-ub</code> or context.</td></tr>
+<tr><td>Agents time out on the first request</td><td>A fresh Claude Code prompt is 15&ndash;20k tokens; the first one takes minutes at a few hundred tokens/s. Later ones reuse the prompt cache.</td></tr>
+<tr><td>Job fails with "no JSON plan"</td><td>The planner's reply had no plan; open the job's events to see what it said, and retry with a more specific task.</td></tr>
+<tr><td>A backend stays in <i>error</i></td><td>It failed to start (see <code>~/.automatica/servers/&lt;profile&gt;.log</code>); press Load to retry after fixing.</td></tr>
+</tbody></table></div>
+</main></body></html>

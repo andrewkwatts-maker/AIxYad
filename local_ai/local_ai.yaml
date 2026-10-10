@@ -1,0 +1,117 @@
+# local_ai configuration: llama-server launch profiles and the gateway.
+#
+# Machine-specific paths (binary, model) live in ~/.automatica/local_ai.yaml, which is
+# merged over this file and may add profiles of its own. A profile's `args` are appended
+# to its `extends` parent's, and llama-server keeps the last value of a repeated flag,
+# so a child only lists what it changes.
+
+defaults:
+  binary: llama-server
+  host: 127.0.0.1
+  port: 11435
+  alias: qwen3.8-flash-next
+  # --load-mode none keeps the CPU-side weights in pinned (page-locked) host buffers:
+  # never paged out, and copied to the GPU at full PCIe speed during prompt reading.
+  # --verbosity 4 logs where each tensor went, which the benchmark reads back.
+  common_args: [--jinja, --metrics, --no-webui, --load-mode, none, --verbosity, 4]
+
+profiles:
+  # What Unsloth Studio launched on 2026-10-10, minus its API key, slot path and UI flags.
+  unsloth-default:
+    description: Unsloth Studio's launch; --fit places tensors around a 256k context
+    args: [--parallel, 4, --flash-attn, on, --no-context-shift, -c, 262144, --fit, on,
+           --kv-unified, --fit-ctx, 262144, --cache-type-k, q4_0, --cache-type-v, q4_0,
+           --spec-default, --ctx-checkpoints, 14]
+
+  # The big model, tunable. --fit places the tensors: it moves every routed expert to RAM,
+  # then fills the GPU with layers' dense tensors (attention, DeltaNet, router, shared
+  # expert), last layers first, until only fit_margin MiB is left. --fit-ctx pins the
+  # context you asked for, so a bigger context costs speed (fewer dense layers on the GPU),
+  # never memory you did not ask for. Do NOT add --cpu-moe or -ot: with any tensor
+  # override set, --fit gives up and loads every layer onto the GPU, which over-fills an
+  # 8 GB card and on Windows silently spills to system RAM.
+  #
+  # Variables (override them when loading: gateway start body `vars`, or bench --set):
+  #   ctx    context per agent, tokens      slots  agents served at once (ctx_total = ctx x slots)
+  #   cache  context cache type: q8_0 (best) or q4_0 (half the memory)
+  #   ub     prompt-reading batch: 256 fits more on the GPU, 512+ reads long prompts faster
+  #   fit_margin  VRAM (MiB) --fit leaves free for Windows and other apps
+  #   load   none: experts in pinned RAM, the 27 GB n-gram table read from disk on demand
+  #          (cached by Windows until other programs need the RAM); mlock / mmap+mlock:
+  #          lock everything in RAM so builds beside it cannot push the table out.
+  #   prio   CPU priority of the model threads: 0 normal, 1 above normal, 2 high. Builds
+  #          running beside the model otherwise take its cores and answers slow down.
+  big:
+    description: Qwen3.8 big model; context, agents and cache precision are tunable
+    vars: {ctx: 65536, slots: 2, cache: q8_0, ub: 256, fit_margin: 1152, prio: 1, load: none}
+    args: [--fit, on, --fit-target, "{fit_margin}", -c, "{ctx_total}",
+           --fit-ctx, "{ctx_total}", --parallel, "{slots}", --kv-unified, --flash-attn, on,
+           -ctk, "{cache}", -ctv, "{cache}", --spec-type, none, --ctx-checkpoints, 14,
+           --cache-ram, 16384, -t, 12, -b, 2048, -ub, "{ub}", --prio, "{prio}", --prio-batch, "{prio}",
+           --load-mode, "{load}"]
+
+  # The context cache in RAM instead of VRAM: every dense layer stays on the GPU at any
+  # context size; the 12 attention layers read their cache from RAM instead.
+  big-kv-ram:
+    extends: big
+    description: big model with the context cache in RAM (huge contexts, all dense layers on GPU)
+    args: [--no-kv-offload]
+
+  # Presets used by the benchmark and as starting points.
+  big-32k:
+    extends: big
+    description: 2 agents x 32k, 8-bit cache
+    vars: {ctx: 32768}
+  big-128k-q4:
+    extends: big
+    description: 2 agents x 128k, 4-bit cache
+    vars: {ctx: 131072, cache: q4_0}
+  big-mlock:
+    extends: big-32k
+    description: big-32k with the whole model locked in RAM
+    vars: {load: mlock}
+  big-mmap-mlock:
+    extends: big-32k
+    description: big-32k memory-mapped and locked in RAM
+    vars: {load: mmap+mlock}
+  big-kv-ram-128k:
+    extends: big-kv-ram
+    description: 2 agents x 128k, 8-bit cache in RAM
+    vars: {ctx: 131072}
+  big-256k-1:
+    extends: big-kv-ram
+    description: 1 agent x 256k, cache in RAM
+    vars: {ctx: 262144, slots: 1}
+  big-ub512:
+    extends: big
+    description: big with 512-token prompt batches
+    vars: {ub: 512}
+  big-cache:
+    extends: big
+    description: big plus an expert cache in VRAM left after fitting
+    args: [--moe-cache-mib, auto]
+
+# The gateway (python -m local_ai.gateway). Clients name a route in the request's `model`
+# field; machine-specific backends (a second PC, more models) go in the user file.
+gateway:
+  listen: ["127.0.0.1:8770"]       # add this PC's Tailscale address to reach it from a phone
+  token_file: ~/.automatica/gateway.token
+  default_route: planner
+  queue_timeout_s: 1800
+  swap:
+    max_hold_s: 120                # a loaded model keeps the GPU this long while another waits
+    idle_unload_s: 0               # 0 keeps a loaded model until something else needs the GPU
+  backends:
+    big:                           # url, model name and slot count come from the profile
+      profile: big
+      group: gpu0                  # backends in one group share the GPU, one loaded at a time
+  routes:
+    planner: {backend: big, thinking: true}
+    worker: {backend: big, thinking: false, max_tokens: 8192}
+  jobs:
+    claude_bin: claude
+    qwen_bin: qwen
+    branch_prefix: claude/local-ai/     # the ecosystem sync never pushes claude/* branches
+    worktree_root: "{repo_parent}/{repo_name}.agents"
+    step_timeout_s: 3600
+    max_plan_steps: 8

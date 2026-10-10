@@ -30,10 +30,13 @@ classifiers = [
 [project.optional-dependencies]
 server = ["fastapi>=0.110", "uvicorn[standard]>=0.28", "python-jose[cryptography]", "cryptography"]
 vision = ["pillow>=10.0"]
-full   = ["automatica[server,vision]"]
+local-ai = ["pyyaml>=6.0"]
+full   = ["automatica[server,vision,local-ai]"]
 
 [project.scripts]
 automatica = "run_autonomous:main"
+automatica-gateway = "local_ai.gateway:main"
+automatica-bench = "local_ai.bench:main"
 
 [tool.setuptools]
 py-modules = [
@@ -54,7 +57,7 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["adapters", "adapters.*"]
+include = ["adapters", "adapters.*", "local_ai"]
 
 [tool.setuptools.package-data]
 "*" = [
@@ -63,3 +66,4 @@ include = ["adapters", "adapters.*"]
     "standards/*.md",
 ]
 "adapters" = ["*.py", "README.md"]
+"local_ai" = ["local_ai.yaml", "API.md", "web/index.html"]

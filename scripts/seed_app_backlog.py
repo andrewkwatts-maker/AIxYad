@@ -15,7 +15,7 @@ APP_TASKS = [
      "Overview: fix hardcoded zero-cost fallback and silent stats failures",
      "screens/overview.py:272 catches all exceptions silently when _load_stats fails; user sees ... forever. "
      "db_service.py:1122-1123 returns hardcoded {total_tokens:0, estimated_cost_usd:0.0} when "
-     "adb.get_sprint_cost_summary missing. Implement get_sprint_cost_summary in automatica_db, "
+     "adb.get_sprint_cost_summary missing. Implement get_sprint_cost_summary in aixyad_db, "
      "surface failures via UI snackbar, replace stat placeholder with meaningful empty state."),
 
     ("APP-AGENTS-1",

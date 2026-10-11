@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Automatica CLI — unified command-line interface.
+AIxYad CLI — unified command-line interface.
 
 Usage:
-    automatica task list   --project PATH [--status STATUS]
-    automatica task create --project PATH --title TITLE [--complexity N] [--description D]
-    automatica sprint start  --project PATH [--max-tasks N]
-    automatica sprint status --project PATH
-    automatica agent list
-    automatica agent run    --slug SLUG --task TASK_ID --project PATH
-    automatica agent export --slug SLUG
-    automatica provider list
-    automatica provider ping --name NAME
-    automatica config get  KEY
-    automatica config set  KEY VALUE
-    automatica config list
+    aixyad task list   --project PATH [--status STATUS]
+    aixyad task create --project PATH --title TITLE [--complexity N] [--description D]
+    aixyad sprint start  --project PATH [--max-tasks N]
+    aixyad sprint status --project PATH
+    aixyad agent list
+    aixyad agent run    --slug SLUG --task TASK_ID --project PATH
+    aixyad agent export --slug SLUG
+    aixyad provider list
+    aixyad provider ping --name NAME
+    aixyad config get  KEY
+    aixyad config set  KEY VALUE
+    aixyad config list
 """
 
 from __future__ import annotations
@@ -28,13 +28,15 @@ from pathlib import Path
 # Ensure the engine package root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import aixyad_paths
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _settings_path() -> Path:
-    return Path.home() / '.automatica' / 'settings.json'
+    return aixyad_paths.home() / 'settings.json'
 
 
 def _load_settings() -> dict:
@@ -59,13 +61,13 @@ def _save_settings(data: dict):
 
 
 def _global_db():
-    import automatica_db as adb
-    db_path = Path.home() / '.automatica' / 'automatica.db'
+    import aixyad_db as adb
+    db_path = aixyad_paths.global_db_path()
     return adb.init_global_db(db_path)
 
 
 def _project_db(project_path: str):
-    import automatica_db as adb
+    import aixyad_db as adb
     return adb.init_project_db(Path(project_path))
 
 
@@ -97,7 +99,7 @@ def cmd_task_list(args):
     """List tasks for a project."""
     try:
         pdb = _project_db(args.project)
-        import automatica_db as adb
+        import aixyad_db as adb
         tasks = adb.list_project_tasks(pdb)
         if args.status:
             tasks = [t for t in tasks if t.get('status') == args.status]
@@ -111,7 +113,7 @@ def cmd_task_create(args):
     """Create a new task in a project."""
     try:
         pdb = _project_db(args.project)
-        import automatica_db as adb
+        import aixyad_db as adb
         result = adb.create_task(
             pdb,
             title=args.title,
@@ -341,8 +343,8 @@ def cmd_config_list(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog='automatica',
-        description='Automatica CLI — manage tasks, sprints, agents, providers and config.',
+        prog='aixyad',
+        description='AIxYad CLI — manage tasks, sprints, agents, providers and config.',
     )
     subparsers = parser.add_subparsers(dest='command', metavar='COMMAND')
 

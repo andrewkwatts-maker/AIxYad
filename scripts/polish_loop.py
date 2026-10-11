@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-polish_loop.py -- Automatica continuous improvement daemon.
+polish_loop.py -- AIxYad continuous improvement daemon.
 
 Runs all day, every INTERVAL minutes.  Each cycle:
   1. Zips both repos as timestamped backups (keeps last MAX_BACKUPS per repo)
@@ -39,7 +39,10 @@ from pathlib import Path
 _SCRIPT_DIR  = Path(__file__).resolve().parent
 ENGINE_DIR   = _SCRIPT_DIR.parent                       # H:/Github/Automatica
 UI_DIR       = ENGINE_DIR.parent / "Automatica-App"    # H:/Github/Automatica-App
-BACKUP_DIR   = ENGINE_DIR.parent / "Automatica-Backups"
+BACKUP_DIR   = ENGINE_DIR.parent / "AIxYad-Backups"
+
+sys.path.insert(0, str(ENGINE_DIR))
+import aixyad_paths
 TODO_FILE    = ENGINE_DIR / "POLISH_TODO.md"
 LOG_DIR      = ENGINE_DIR / "logs"
 RUN_AUTO     = ENGINE_DIR / "run_autonomous.py"
@@ -88,7 +91,7 @@ def backup_repos() -> None:
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
     repos = [
-        ("Automatica",     ENGINE_DIR),
+        ("AIxYad",         ENGINE_DIR),
         ("Automatica-App", UI_DIR),
     ]
 
@@ -232,7 +235,7 @@ def _repo_for(target: str) -> Path:
 _PY_MODULE_RE = re.compile(r"\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\.(py|py\b)", re.ASCII)
 _KNOWN_FILES_RE = re.compile(
     r"\b(sprint_runner|run_autonomous|agent_protocol|agent_executor|"
-    r"automatica_db|project_scanner|ai_adapters|ollama_utils|"
+    r"aixyad_db|project_scanner|ai_adapters|ollama_utils|"
     r"validation|db_actions|view_actions|vision_actions|"
     r"api_server|app|workspace|nav_rail|nav_data|tab_bar|soft_card|section_list|"
     r"settings|management|overview|logs|agents|standards|pipeline|"
@@ -248,7 +251,7 @@ def _link_files_to_task(repo: Path, task_display_id: str, desc: str) -> None:
     """
     import sqlite3 as _sqlite3
 
-    db_path = repo / ".automatica" / "project.db"
+    db_path = aixyad_paths.project_state(repo) / "project.db"
     if not db_path.exists():
         return
 
@@ -546,7 +549,7 @@ def run_cycle() -> None:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Automatica continuous-improvement daemon")
+    parser = argparse.ArgumentParser(description="AIxYad continuous-improvement daemon")
     parser.add_argument("--interval", type=int, default=INTERVAL_MIN,
                         help=f"Minutes between cycles (default: {INTERVAL_MIN})")
     parser.add_argument("--once",        action="store_true", help="Run one cycle then exit")

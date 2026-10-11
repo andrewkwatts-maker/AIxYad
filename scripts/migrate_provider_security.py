@@ -5,8 +5,8 @@ This script is idempotent and never deletes rows. Run from the Automatica dir:
 
     python scripts/migrate_provider_security.py [--dry-run] [--db PATH]
 
-By default it operates on the global Automatica DB at
-~/.automatica/automatica.db (and falls back to ./automatica.db).
+By default it operates on the global AIxYad DB at
+~/.aixyad/aixyad.db (and falls back to ./aixyad.db).
 
 Why: previously the Claude provider config carried
 `--dangerously-skip-permissions` which is a blanket security void. The agent
@@ -22,15 +22,18 @@ import sqlite3
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import aixyad_paths
+
 _DANGEROUS_FLAG = "--dangerously-skip-permissions"
 _REPLACEMENT_FLAGS = ["--permission-mode", "acceptEdits"]
 
 
 def _default_db_path() -> Path:
-    home = Path.home() / ".automatica" / "automatica.db"
+    home = aixyad_paths.home() / "aixyad.db"
     if home.exists():
         return home
-    here = Path(__file__).resolve().parent.parent / "automatica.db"
+    here = aixyad_paths.global_db_path(base_dir=Path(__file__).resolve().parent.parent)
     return here
 
 

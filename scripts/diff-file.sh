@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/diff-file.sh ======
+#====== AIxYad/scripts/diff-file.sh ======
 # Diffs a file against its backup in temp directory
 # Usage: ./diff-file.sh <file_path> [--brief] [--cleanup]
 # Options:

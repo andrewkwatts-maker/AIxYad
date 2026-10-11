@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#====== Automatica/scripts/generate-sprint-report.py ======
+#====== AIxYad/scripts/generate-sprint-report.py ======
 #!copyright (c) 2025 Andrew Keith Watts. All rights reserved.
 #!
 #!This is the intellectual property of Andrew Keith Watts. Unauthorized
@@ -349,7 +349,7 @@ def build_html_report(sprint, tasks, backlog, next_tasks, settings):
   <!-- Page 1 Footer -->
   <tr>
     <td style="padding: 16px 40px; border-top: 1px solid #eee; font-size: 11px; color: #aaa; text-align: center;">
-      Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by Automatica Sprint Reporter &nbsp;|&nbsp; Detailed breakdown below &#8595;
+      Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by AIxYad Sprint Reporter &nbsp;|&nbsp; Detailed breakdown below &#8595;
     </td>
   </tr>
 </table>
@@ -447,7 +447,7 @@ def build_html_report(sprint, tasks, backlog, next_tasks, settings):
   <tr>
     <td style="padding: 20px 40px; border-top: 1px solid #eee; background: #f8f9fa; text-align: center;">
       <p style="margin: 0; font-size: 12px; color: #aaa;">
-        {project_name} — Automatica Sprint Report<br>
+        {project_name} — AIxYad Sprint Report<br>
         Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
       </p>
     </td>

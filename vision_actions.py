@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#====== Automatica/vision_actions.py ======
+#====== AIxYad/vision_actions.py ======
 #!copyright (c) 2025 Andrew Keith Watts. All rights reserved.
 """
 High-level agent action handlers for vision analysis and UI automation.

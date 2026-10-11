@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/cleanup-temp.sh ======
+#====== AIxYad/scripts/cleanup-temp.sh ======
 # Cleans up the temp backup directory
 # Usage: ./cleanup-temp.sh [--force] [--older-than N] [--dry-run]
 

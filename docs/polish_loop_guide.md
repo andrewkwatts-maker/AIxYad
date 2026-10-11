@@ -27,7 +27,7 @@ python scripts/polish_loop.py --list
 
 ## What Each Cycle Does
 
-1. **Backup** — Zips both `Automatica/` and `Automatica-App/` to `../Automatica-Backups/` with a timestamp. Keeps the last 10 backups per repo.
+1. **Backup** — Zips both `Automatica/` and `Automatica-App/` to `../AIxYad-Backups/` with a timestamp. Keeps the last 10 backups per repo.
 
 2. **Provider check** — Registers the configured Ollama model in the global DB if not already present.
 

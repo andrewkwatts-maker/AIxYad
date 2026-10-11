@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/get-context.sh ======
+#====== AIxYad/scripts/get-context.sh ======
 # Extracts relevant context for a task (related files, dependencies)
 # Usage: ./get-context.sh "search term" [--files-only] [--deps]
 

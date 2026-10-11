@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/report-status.sh ======
+#====== AIxYad/scripts/report-status.sh ======
 # Generates a status report of current project state
 # Usage: ./report-status.sh [--json] [--brief]
 

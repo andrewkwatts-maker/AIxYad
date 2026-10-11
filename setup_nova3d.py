@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-One-shot setup script for Nova3D + Automatica integration.
+One-shot setup script for Nova3D + AIxYad integration.
 
   1. Verify/update Claude-Sonnet provider config in global DB
   2. Register Nova3D in known_projects (global DB)
-  3. Init project DB via Automatica APIs, import all TASKS.md tasks
+  3. Init project DB via AIxYad APIs, import all TASKS.md tasks
   4. Write AGENTS.md for agent context
   5. Print launch instructions
 
@@ -19,9 +19,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import aixyad_paths
 
-AUTOMATICA_DIR  = Path(__file__).parent
-GLOBAL_DB_PATH  = Path.home() / ".automatica" / "automatica.db"
+AIXYAD_DIR  = Path(__file__).parent
+GLOBAL_DB_PATH  = aixyad_paths.global_db_path()
 NOVA_DIR        = Path(r"H:\Github\Nova3D")
 NOVA_TASKS_FILE = NOVA_DIR / "TASKS.md"
 PROVIDER_NAME   = "Claude-Sonnet"
@@ -55,7 +56,7 @@ def lamport_to_complexity(lamport: int) -> int:
     if lamport <= 149: return 21   # WC3 gameplay systems
     return 34                      # UE5 graphics tier
 
-def automatica_status(tasks_status: str) -> str:
+def aixyad_status(tasks_status: str) -> str:
     return {"done": "done", "skipped": "archived"}.get(tasks_status, "backlog")
 
 
@@ -199,7 +200,7 @@ def parse_tasks(path: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# 4. Import tasks into Automatica project DB
+# 4. Import tasks into AIxYad project DB
 # ---------------------------------------------------------------------------
 
 def _add_column(conn: sqlite3.Connection, table: str, col: str, defn: str) -> None:
@@ -211,10 +212,10 @@ def _add_column(conn: sqlite3.Connection, table: str, col: str, defn: str) -> No
 
 
 def import_tasks(tasks: list[dict]) -> None:
-    print(f"\n[3] Importing {len(tasks)} tasks into Automatica project DB")
+    print(f"\n[3] Importing {len(tasks)} tasks into AIxYad project DB")
 
-    sys.path.insert(0, str(AUTOMATICA_DIR))
-    from automatica_db import init_project_db  # noqa: PLC0415
+    sys.path.insert(0, str(AIXYAD_DIR))
+    from aixyad_db import init_project_db  # noqa: PLC0415
 
     conn = init_project_db(NOVA_DIR)
 
@@ -244,11 +245,11 @@ def import_tasks(tasks: list[dict]) -> None:
 
         priority   = PRIORITY_MAP.get(t["priority"], "MEDIUM")
         complexity = lamport_to_complexity(t["lamport"])
-        status     = automatica_status(t["status"])
+        status     = aixyad_status(t["status"])
         agent_slug = t["agent"].lower()
         description, acceptance = _split_body(t["body"])
 
-        # Wire first declared dependency to Automatica's FK column
+        # Wire first declared dependency to AIxYad's FK column
         depends_on_task_id: int | None = None
         if t["depends"]:
             first_dep = t["depends"][0]
@@ -355,14 +356,14 @@ def write_agents_md() -> None:
 
 def main() -> None:
     print("=" * 60)
-    print("  Automatica x Nova3D Setup")
+    print("  AIxYad x Nova3D Setup")
     print("=" * 60)
 
     if not NOVA_TASKS_FILE.exists():
         sys.exit(f"ERROR: {NOVA_TASKS_FILE} not found")
 
-    sys.path.insert(0, str(AUTOMATICA_DIR))
-    from automatica_db import init_global_db  # noqa: PLC0415
+    sys.path.insert(0, str(AIXYAD_DIR))
+    from aixyad_db import init_global_db  # noqa: PLC0415
 
     gconn = init_global_db(GLOBAL_DB_PATH)
     configure_provider(gconn)

@@ -2,7 +2,7 @@
 """
 Send email, Slack, and webhook notifications on sprint events.
 
-Configuration is read from ~/.automatica/settings.json under the
+Configuration is read from ~/.aixyad/settings.json under the
 'notifications' key:
   {
     "notifications": {
@@ -25,14 +25,16 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
+import aixyad_paths
+
 
 # ---------------------------------------------------------------------------
 # Config loader
 # ---------------------------------------------------------------------------
 
 def _load_email_config() -> dict:
-    """Load notification config from ~/.automatica/settings.json."""
-    cfg_path = Path.home() / '.automatica' / 'settings.json'
+    """Load notification config from ~/.aixyad/settings.json."""
+    cfg_path = aixyad_paths.home() / 'settings.json'
     if not cfg_path.exists():
         return None
     try:

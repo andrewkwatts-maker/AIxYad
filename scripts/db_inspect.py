@@ -3,7 +3,7 @@ import sys
 
 def inspect_db(db_path):
     """
-    Reads the .automatica/project.db database and prints task counts by status
+    Reads the .aixyad/project.db database and prints task counts by status
     and the last 5 sprint summaries.
     """
     try:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Automatica AI Adapter registry.
+AIxYad AI Adapter registry.
 
 Add a new adapter by:
   1. Creating  adapters/<your_adapter>.py  with a class that extends BaseAdapter.

@@ -5,7 +5,7 @@ def test_1000_task_query_under_1s(tmp_path):
     """Inserting and querying 1000 tasks should complete in under 1s."""
     import sys
     sys.path.insert(0, r'H:\Github\Automatica')
-    from automatica_db import init_project_db
+    from aixyad_db import init_project_db
 
     conn = sqlite3.connect(':memory:')
     conn.row_factory = sqlite3.Row
@@ -35,7 +35,7 @@ def test_action_log_query_under_500ms(tmp_path):
     """10000 action_log entries should query in under 500ms with proper index."""
     import sys
     sys.path.insert(0, r'H:\Github\Automatica')
-    from automatica_db import init_project_db
+    from aixyad_db import init_project_db
 
     proj_dir = tmp_path / 'log_perf_project'
     proj_dir.mkdir()

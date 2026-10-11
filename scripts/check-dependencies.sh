@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/check-dependencies.sh ======
+#====== AIxYad/scripts/check-dependencies.sh ======
 # Checks project dependencies for issues (outdated, vulnerable, unused)
 # Usage: ./check-dependencies.sh [--security] [--outdated] [--update]
 

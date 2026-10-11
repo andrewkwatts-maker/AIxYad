@@ -11,7 +11,7 @@ or add a Tailscale address to `gateway.listen`.
 ## Auth
 
 Every request needs `Authorization: Bearer <token>`. The token is in
-`~/.automatica/gateway.token` and is created on first start (43 url-safe characters).
+`~/.aixyad/gateway.token` and is created on first start (43 url-safe characters).
 
 There are two exceptions:
 
@@ -38,7 +38,7 @@ The body's `model` field picks the destination:
 - A backend's own model **alias** goes straight to that backend.
 - Anything else goes to the `default` route.
 
-Responses carry `X-Automatica-Backend: <backend name>`.
+Responses carry `X-AIxYad-Backend: <backend name>`.
 
 ## Status
 
@@ -105,7 +105,7 @@ Field notes:
 - `cli`: `claude` (Claude Code, through `/v1/messages`) or `qwen` (Qwen Code, through
   `/v1/chat/completions`). Each runs with its own config folder.
 - `worktrees: true` runs each step in its own git worktree under
-  `<cwd>/.automatica/worktrees/<job>-<step>`, so steps never edit the same files.
+  `<cwd>/.aixyad/worktrees/<job>-<step>`, so steps never edit the same files.
 
 The reply is `{"id": "j_20261010_184501_ab12"}`.
 

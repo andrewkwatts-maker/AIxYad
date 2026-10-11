@@ -154,7 +154,7 @@ Both actions require the `can_write_file` permission (same as other task mutatio
 ### Python API
 
 ```python
-from automatica_db import create_subtask, complete_subtask
+from aixyad_db import create_subtask, complete_subtask
 
 # Create a subtask
 result = create_subtask(

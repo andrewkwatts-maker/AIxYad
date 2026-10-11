@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 import json
 
-from automatica_db import (
+from aixyad_db import (
     init_project_db,
     create_task,
     update_task,
@@ -20,7 +20,7 @@ from automatica_db import (
 def _pconn():
     """Create an in-memory project DB with full schema applied."""
     import tempfile, pathlib, os
-    # init_project_db needs a real path (it creates .automatica/project.db)
+    # init_project_db needs a real path (it creates .aixyad/project.db)
     # Use a temp directory so it works in CI
     tmpdir = tempfile.mkdtemp()
     conn = init_project_db(pathlib.Path(tmpdir))
@@ -138,7 +138,7 @@ class TestTaskComments:
 class TestSprintRetrospective:
     def test_save_and_get_retro(self):
         pconn = _pconn()
-        from automatica_db import create_sprint as cs
+        from aixyad_db import create_sprint as cs
         s = cs(pconn, sprint_number=1, goal='Sprint 1')
         save_retrospective(pconn, s['id'], 'Things went well', 'Could improve X', 'Action: do Y')
         retro = get_retrospective(pconn, s['id'])
@@ -147,7 +147,7 @@ class TestSprintRetrospective:
 
     def test_update_retro(self):
         pconn = _pconn()
-        from automatica_db import create_sprint as cs
+        from aixyad_db import create_sprint as cs
         s = cs(pconn, sprint_number=2, goal='Sprint 2')
         save_retrospective(pconn, s['id'], 'Good', 'Bad', 'Fix')
         save_retrospective(pconn, s['id'], 'Great', 'Better', 'Improve')
@@ -157,7 +157,7 @@ class TestSprintRetrospective:
 
     def test_get_retro_missing(self):
         pconn = _pconn()
-        from automatica_db import create_sprint as cs
+        from aixyad_db import create_sprint as cs
         s = cs(pconn, sprint_number=99, goal='No retro sprint')
         retro = get_retrospective(pconn, s['id'])
         assert retro == {}

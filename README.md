@@ -1,8 +1,8 @@
-# Automatica
+# AIxYad
 
 > Multi-agent AI software development framework — autonomous sprint runner, headless server, agent protocol
 
-Automatica is a provider-agnostic engine for running AI agents against software projects.
+AIxYad is a provider-agnostic engine for running AI agents against software projects.
 It manages sprints, tasks, agent loops, and project context — controlled entirely from the
 command line or connected to via REST + WebSocket from a UI.
 
@@ -11,23 +11,23 @@ command line or connected to via REST + WebSocket from a UI.
 ## Install
 
 ```bash
-pip install automatica
+pip install aixyad
 
 # With API server support:
-pip install automatica[server]
+pip install aixyad[server]
 
 # With vision/screenshot support:
-pip install automatica[vision]
+pip install aixyad[vision]
 
 # Everything:
-pip install automatica[full]
+pip install aixyad[full]
 ```
 
 ---
 
 ## Default AI Model — gemma3:4b via Ollama
 
-Automatica ships with **gemma3:4b** as the default local model for simple tasks,
+AIxYad ships with **gemma3:4b** as the default local model for simple tasks,
 routed automatically via Ollama.
 
 ```bash
@@ -35,14 +35,14 @@ routed automatically via Ollama.
 # 2. Pull the default model
 ollama pull gemma3:4b
 
-# 3. Register it in Automatica (one-time)
-automatica --AddProvider "Ollama" \
+# 3. Register it in AIxYad (one-time)
+aixyad --AddProvider "Ollama" \
     --ProviderType http_local_chat \
     --ProviderUrl   http://localhost:11434 \
     --ProviderModel gemma3:4b
 ```
 
-Automatica auto-registers `gemma3:4b` as the "fast" provider on first run when
+AIxYad auto-registers `gemma3:4b` as the "fast" provider on first run when
 Ollama is reachable. It is used for low-complexity tasks (complexity ≤ 3) so that
 API quota on larger models is preserved for harder work.
 
@@ -51,27 +51,27 @@ API quota on larger models is preserved for harder work.
 ## First-Time Setup
 
 Add an AI provider before running sprints. Providers are stored in the global DB
-(`~/.automatica/automatica.db`) — not hardcoded.
+(`~/.aixyad/aixyad.db`) — not hardcoded.
 
 ```bash
 # List currently configured providers
-automatica --ListProviders
+aixyad --ListProviders
 
 # Add a local inference server (e.g. Ollama)
-automatica --AddProvider "Ollama" \
+aixyad --AddProvider "Ollama" \
     --ProviderType http_local_chat \
     --ProviderUrl   http://localhost:11434 \
     --ProviderModel llama3.2:3b
 
 # Add any OpenAI-format cloud API
-automatica --AddProvider "My Cloud Provider" \
+aixyad --AddProvider "My Cloud Provider" \
     --ProviderType http_chat_completions \
     --ProviderUrl   https://api.example.com \
     --ProviderModel model-name \
     --ProviderKeyEnv MY_API_KEY_ENV_VAR
 
 # Remove a provider
-automatica --RemoveProvider "My Cloud Provider"
+aixyad --RemoveProvider "My Cloud Provider"
 ```
 
 See [adapters/README.md](adapters/README.md) for detailed setup examples for common
@@ -83,19 +83,19 @@ API formats (OpenAI-compatible, generateContent, local servers, CLI tools).
 
 ```bash
 # Run one sprint on a project
-automatica --Project /path/to/project --StartSprint --provider Ollama
+aixyad --Project /path/to/project --StartSprint --provider Ollama
 
 # Continuous polling (re-run sprint every 5 minutes)
-automatica --Project /path/to/project --Polling 5min --provider Ollama
+aixyad --Project /path/to/project --Polling 5min --provider Ollama
 
 # Start headless API server (connects to Automatica App on phone/PC)
-automatica --Serve
+aixyad --Serve
 
 # Server + continuous sprint loop
-automatica --Serve --Project /path/to/project --Polling 5min --provider Ollama
+aixyad --Serve --Project /path/to/project --Polling 5min --provider Ollama
 
 # Initialize a project with a goal
-automatica --Project /path/to/project --ProjectGoal "Build a 2D pong game" --provider Ollama
+aixyad --Project /path/to/project --ProjectGoal "Build a 2D pong game" --provider Ollama
 ```
 
 ---
@@ -144,7 +144,7 @@ automatica --Project /path/to/project --ProjectGoal "Build a 2D pong game" --pro
 
 ## AI Adapters
 
-Automatica uses protocol-named adapters — no provider is hardcoded.
+AIxYad uses protocol-named adapters — no provider is hardcoded.
 Bring your own credentials and configure any compatible service.
 
 | Adapter type | Protocol | Typical use |
@@ -165,7 +165,7 @@ run_autonomous.py     CLI entry point — flags, provider management, sprint loo
 sprint_runner.py      Sprint lifecycle (Refinement → Planning → Execution → Review)
 agent_protocol.py     Agent request/response loop with AI providers
 agent_executor.py     Sandboxed action execution (file ops, shell, DB, vision)
-automatica_db.py      SQLite — global DB (providers, agents) + per-project DB
+aixyad_db.py      SQLite — global DB (providers, agents) + per-project DB
 ai_adapters.py        Adapter registry shim (protocol-named adapters in adapters/)
 adapters/             Pluggable adapter package — add/remove without touching other code
 db_actions.py         DB operations exposed to agents
@@ -189,7 +189,7 @@ source file in a project — path, language, line count, last-modified timestamp
 one-line summary extracted from docstrings or comments.
 
 ```
-.automatica/wiki_index.json
+.aixyad/wiki_index.json
 ```
 
 The wiki is regenerated automatically at sprint start and cached; subsequent calls
@@ -233,7 +233,7 @@ and dramatically reduces wasted iterations.
 
 ## Provider Routing
 
-Automatica routes tasks to different AI providers based on **task complexity** (1–13 scale):
+AIxYad routes tasks to different AI providers based on **task complexity** (1–13 scale):
 
 | Complexity | Provider | Typical model |
 |------------|----------|---------------|
@@ -250,7 +250,7 @@ which eventually escalates them to a more capable model.
 
 ## REST API
 
-When running with `--Serve`, Automatica exposes a REST + WebSocket API:
+When running with `--Serve`, AIxYad exposes a REST + WebSocket API:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -303,7 +303,7 @@ role guidance, coding standards, project goals, file structure, or anything else
 ```
 your-project/
   AGENTS.md           ← project-specific instructions for agents
-  .automatica/
+  .aixyad/
     project.db        ← tasks, sprints, backlog
 ```
 
@@ -313,18 +313,18 @@ your-project/
 
 | DB | Path | Contents |
 |----|------|----------|
-| Global | `~/.automatica/automatica.db` | Providers, agent configs, global metrics |
-| Per-project | `<project>/.automatica/project.db` | Tasks, sprints, backlog, settings |
+| Global | `~/.aixyad/aixyad.db` | Providers, agent configs, global metrics |
+| Per-project | `<project>/.aixyad/project.db` | Tasks, sprints, backlog, settings |
 
 ---
 
 ## Server Mode
 
 ```bash
-automatica --Serve
+aixyad --Serve
 # → API server on http://0.0.0.0:8765
 
-automatica --Serve --Project /path/to/project --Polling 5min --provider Ollama
+aixyad --Serve --Project /path/to/project --Polling 5min --provider Ollama
 # → API server + continuous sprint loop
 ```
 

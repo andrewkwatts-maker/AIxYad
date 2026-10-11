@@ -40,7 +40,7 @@ class TestGemma3SmokeTest:
         project_dir.mkdir()
         
         # Initialize project database
-        from automatica_db import init_project_db
+        from aixyad_db import init_project_db
         conn = init_project_db(project_dir)
         
         # Set a trivial project goal

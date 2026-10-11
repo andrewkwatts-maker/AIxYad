@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#====== Automatica/test_vision_actions.py ======
+#====== AIxYad/test_vision_actions.py ======
 #!copyright (c) 2025 Andrew Keith Watts. All rights reserved.
 """
 Unit and integration tests for:

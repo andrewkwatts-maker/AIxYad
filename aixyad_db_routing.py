@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Complexity routing setup for Automatica.
+Complexity routing setup for AIxYad.
 
 This module provides a function to seed default complexity-based provider routing:
 - complexity <= 3 → gemma3:4b (fast)
@@ -124,7 +124,7 @@ if __name__ == '__main__':
     
     # Import from parent directory
     sys.path.insert(0, str(Path(__file__).parent))
-    from automatica_db import init_global_db
+    from aixyad_db import init_global_db
     
     print("Setting up complexity routing...")
     conn = init_global_db()

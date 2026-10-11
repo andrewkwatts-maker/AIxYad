@@ -1,6 +1,6 @@
 # Settings
 
-Configure Automatica's behavior and connections.
+Configure AIxYad's behavior and connections.
 
 **Connection tab:**
 - Switch between Server mode (local DB) and Client mode (remote API)

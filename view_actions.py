@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Automatica View Actions — Hierarchical file/code view system for AI agents.
+AIxYad View Actions — Hierarchical file/code view system for AI agents.
 
 Provides structured get/set view operations so agents can navigate a project's
 file tree, open specific files or code sections, and retrieve keyword-matched
@@ -41,7 +41,7 @@ _TEXT_EXTS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.html', '.css', '.md',
               '.sh', '.bat', '.ps1', '.c', '.cpp', '.h', '.hpp', '.java',
               '.cs', '.go', '.rs', '.kv'}
 
-_IGNORE_DIRS = {'.git', '__pycache__', 'node_modules', '.automatica', 'dist',
+_IGNORE_DIRS = {'.git', '__pycache__', 'node_modules', '.aixyad', '.automatica', 'dist',
                 'build', '.venv', 'venv', 'env', '.env', '.mypy_cache', '.pytest_cache'}
 
 

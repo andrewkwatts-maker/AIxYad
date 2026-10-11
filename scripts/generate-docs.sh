@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/generate-docs.sh ======
+#====== AIxYad/scripts/generate-docs.sh ======
 # Auto-generates ProjectStructure.md and ClassStructure.md
 # Usage: ./generate-docs.sh [--structure] [--classes] [--all]
 

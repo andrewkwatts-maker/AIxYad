@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/list-tasks.sh ======
+#====== AIxYad/scripts/list-tasks.sh ======
 # Lists all tasks from TODO.md with summary info
 # Usage: ./list-tasks.sh [--priority HIGH|MEDIUM|LOW] [--agent AgentName] [--brief]
 
@@ -47,7 +47,7 @@ if [ ! -f "$TODO_FILE" ]; then
 fi
 
 echo "========================================"
-echo "Automatica Task Backlog"
+echo "AIxYad Task Backlog"
 echo "========================================"
 
 # Count tasks

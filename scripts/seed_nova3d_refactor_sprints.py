@@ -14,6 +14,10 @@ Encoding strategy:
 import sqlite3
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import aixyad_paths
 
 # ── Sprint plan as data ─────────────────────────────────────────────────────
 # Each agent = (role_slug, [(wp_letter, title, desc, complexity), ...])
@@ -105,7 +109,7 @@ SPRINTS = [
             ]),
             ("AI-protocol", [
                 ("a", "Define AIRequest/AIResponse JSON schema",
-                 "Mirrors Automatica agent_protocol shape: {action, params, reasoning} response. "
+                 "Mirrors AIxYad agent_protocol shape: {action, params, reasoning} response. "
                  "Schema lives at engine/llm/protocol.schema.json. Used by every AI helper.", 5),
                 ("b", "engine/llm/AIHelper.hpp façade",
                  "AIHelper::Generate(template_name, vars) → typed result. Wraps OllamaClient + "
@@ -711,7 +715,7 @@ SPRINTS = [
 
 
 def main():
-    db_path = r"H:\Github\Nova3D\.automatica\project.db"
+    db_path = str(aixyad_paths.project_state(Path(r"H:\Github\Nova3D")) / "project.db")
     conn = sqlite3.connect(db_path)
     cols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)")]
     have_complexity = "complexity" in cols

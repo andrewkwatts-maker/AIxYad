@@ -22,7 +22,7 @@ param(
     [int]    $Port = 11437,
     [int]    $Context = 16384,
     [int]    $Slots = 1,
-    [string] $KeyFile = "$env:USERPROFILE\.automatica\node.key",
+    [string] $KeyFile = "$env:USERPROFILE\.aixyad\node.key",
     [string[]] $Extra = @()
 )
 $ErrorActionPreference = "Stop"

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Automatica Database — Dual SQLite database management.
+"""AIxYad Database — Dual SQLite database management.
 
 Manages two databases:
-  Global DB  (automatica.db, next to EXE)  — providers, agents, performance, usage
-  Project DB ({project}/.automatica/project.db) — tasks, sprints, subtasks, history
+  Global DB  (aixyad.db, next to EXE)  — providers, agents, performance, usage
+  Project DB ({project}/.aixyad/project.db) — tasks, sprints, subtasks, history
 """
 
 import sqlite3
@@ -14,6 +14,8 @@ import zlib
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime, timezone
+
+import aixyad_paths
 
 SCHEMA_VERSION = 7
 
@@ -890,7 +892,7 @@ def _check_integrity(conn: sqlite3.Connection, db_path: Path):
 
 
 def _set_dir_permissions(directory: Path):
-    """C-10: Set ~/.automatica directory to owner-only permissions (700)."""
+    """C-10: Set ~/.aixyad directory to owner-only permissions (700)."""
     import stat
     import os as _os
     try:
@@ -902,7 +904,7 @@ def _set_dir_permissions(directory: Path):
 def init_global_db(db_path: Path = None) -> sqlite3.Connection:
     """Initialize the global database. Creates tables if needed.
 
-    If db_path is None, defaults to automatica.db next to this script
+    If db_path is None, defaults to aixyad.db next to this script
     (or next to the frozen EXE).
     """
     if db_path is None:
@@ -910,12 +912,12 @@ def init_global_db(db_path: Path = None) -> sqlite3.Connection:
             base = Path(sys.executable).parent
         else:
             base = Path(__file__).parent
-        db_path = base / "automatica.db"
+        db_path = aixyad_paths.global_db_path(base_dir=base)
 
     # C-10: set directory permissions to owner-only
-    automatica_dir = Path(db_path).parent
-    automatica_dir.mkdir(parents=True, exist_ok=True)
-    _set_dir_permissions(automatica_dir)
+    aixyad_dir = Path(db_path).parent
+    aixyad_dir.mkdir(parents=True, exist_ok=True)
+    _set_dir_permissions(aixyad_dir)
 
     conn = init_connection(db_path)
     # C-19: integrity check on first open per process
@@ -935,9 +937,9 @@ def init_global_db(db_path: Path = None) -> sqlite3.Connection:
 
 
 def init_project_db(project_dir: Path) -> sqlite3.Connection:
-    """Initialize a project database at {project_dir}/.automatica/project.db."""
+    """Initialize a project database at {project_dir}/.aixyad/project.db."""
     project_dir = Path(project_dir)
-    db_path = project_dir / ".automatica" / "project.db"
+    db_path = aixyad_paths.project_state(project_dir) / "project.db"
 
     # C-10: set directory permissions to owner-only
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4818,11 +4820,11 @@ def get_auth_audit_log(conn, limit: int = 100) -> list:
 if __name__ == "__main__":
     import tempfile, os
 
-    print("=== Automatica DB self-test ===\n")
+    print("=== AIxYad DB self-test ===\n")
 
     # Test global DB
     with tempfile.TemporaryDirectory() as tmpdir:
-        gdb_path = Path(tmpdir) / "automatica.db"
+        gdb_path = Path(tmpdir) / "aixyad.db"
         gconn = init_global_db(gdb_path)
         print(f"[OK] Global DB created: {gdb_path}")
         assert get_schema_version(gconn) == SCHEMA_VERSION
@@ -4836,7 +4838,7 @@ if __name__ == "__main__":
     # Test project DB
     with tempfile.TemporaryDirectory() as tmpdir:
         pconn = init_project_db(Path(tmpdir))
-        print(f"[OK] Project DB created: {Path(tmpdir) / '.automatica' / 'project.db'}")
+        print(f"[OK] Project DB created: {Path(tmpdir) / '.aixyad' / 'project.db'}")
 
         seed_default_pipeline(pconn)
         steps = pconn.execute("SELECT COUNT(*) FROM pipeline_steps").fetchone()[0]

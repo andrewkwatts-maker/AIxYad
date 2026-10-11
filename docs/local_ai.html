@@ -31,7 +31,7 @@ ol li,ul li{margin:5px 0}
 <h1>Local AI gateway: how to</h1>
 <p class="lede">Run Qwen3.8-Flash-Next and smaller models on this PC (RTX 3070 Ti 8 GB, 128 GB RAM) and a second PC,
 drive them from VS Code, Claude Code or a phone, and let a big planner model hand steps to worker agents.
-Package: <code>Automatica/local_ai</code>. API: <code>local_ai/API.md</code>. VS Code extension: the <code>Automatica-Code</code> repo.</p>
+Package: <code>AIxYad/local_ai</code>. API: <code>local_ai/API.md</code>. VS Code extension: the <code>Automatica-Code</code> repo.</p>
 
 <nav class="toc card">
 <a href="#shape">1. How it fits together</a><br><a href="#results">2. Measured on this PC</a><br>
@@ -135,19 +135,19 @@ still needs ~82 GB of real RAM beside everything else.</p>
 <tr><td><b>AI data on D:</b></td><td>C: was 12 GB from full. D: is the same NVMe.</td><td>Done: Ollama models are in <code>D:\Models\ollama</code> (<code>OLLAMA_MODELS</code>, plus a junction at the old path so Unsloth's links still work). GGUFs live in <code>D:\Models</code>.</td></tr>
 </tbody></table>
 <p class="note">Unsloth's llama.cpp build needs the CUDA 13 runtime DLLs from Unsloth's bundled PyTorch on PATH, or it
-silently runs on the CPU only. <code>~/.automatica/local_ai.yaml</code> sets <code>dll_dirs</code> for that.</p>
+silently runs on the CPU only. <code>~/.aixyad/local_ai.yaml</code> sets <code>dll_dirs</code> for that.</p>
 </div>
 
 <h2 id="run">4. Run the gateway</h2>
 <div class="card"><ol>
-<li>Machine paths go in <code>%USERPROFILE%\.automatica\local_ai.yaml</code> (merged over the packaged
+<li>Machine paths go in <code>%USERPROFILE%\.aixyad\local_ai.yaml</code> (merged over the packaged
 <code>local_ai/local_ai.yaml</code>):
 <pre>defaults:
   binary: C:/Users/Andrew/.unsloth/llama.cpp/build/bin/Release/llama-server.exe
   model: D:/Models/Qwen3.8-Flash-Next-UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00003.gguf
   dll_dirs: [C:/Users/Andrew/.unsloth/studio/unsloth_studio/Lib/site-packages/torch/lib]</pre></li>
 <li>Start it from the Automatica folder: <code>python -m local_ai.gateway</code>. The token is created in
-<code>~/.automatica/gateway.token</code>; <code>python -m local_ai.gateway --print-token</code> shows it.</li>
+<code>~/.aixyad/gateway.token</code>; <code>python -m local_ai.gateway --print-token</code> shows it.</li>
 <li>The big model loads on the first request (about 70&ndash;80 s), or press <i>Load</i> in VS Code or on the phone page.</li>
 <li>Any OpenAI- or Anthropic-style client can use it: base URL <code>http://127.0.0.1:8770</code> (Anthropic) or
 <code>http://127.0.0.1:8770/v1</code> (OpenAI), key = the token, model = <code>planner</code> or <code>worker</code>.
@@ -173,7 +173,7 @@ model for planning and swaps to the small one for the steps.</li>
 Steps run in parallel when their dependencies are done and their files do not overlap.</li>
 <li><b>Review the result</b>: nothing is committed. The job's last event lists the changed files; open the worktree, check the diff, merge what you want.</li>
 </ol>
-<p>Each CLI runs with its own config folder (<code>~/.automatica/cli/claude</code>), so your normal Claude Code sign-in, settings and history are untouched,
+<p>Each CLI runs with its own config folder (<code>~/.aixyad/cli/claude</code>), so your normal Claude Code sign-in, settings and history are untouched,
 and gets the gateway address and token only in its environment. Shell commands are off unless the job allows them.</p>
 <p class="note">Claude Code is proprietary: each user installs it and accepts Anthropic's terms; pointing your own install at a local
 server is the documented LLM-gateway setup. Qwen Code (Apache 2.0) is supported by the job runner but was not installed when this was written.</p>
@@ -214,7 +214,7 @@ becomes plain <code>/ui</code>; bookmark that. The page shows the model servers 
 <pre>gateway:
   backends:
     lan-small: {url: "http://&lt;second-pc&gt;:11437", model: lan-small, slots: 1,
-                api_key_file: ~/.automatica/node.key}
+                api_key_file: ~/.aixyad/node.key}
   routes:
     fast: {backend: lan-small, thinking: false}</pre></li>
 <li>The gateway checks its health every 15 s and shows it as <i>unreachable</i> when that PC is off or busy.</li>
@@ -226,7 +226,7 @@ becomes plain <code>/ui</code>; bookmark that. The page shows the model servers 
 <div class="card">
 <pre>python -m local_ai.bench --list
 python -m local_ai.bench fit-32k fit-32k-ub256        # load, measure, unload each in turn</pre>
-<p>Results append to <code>~/.automatica/bench/results.jsonl</code>; server logs are in <code>~/.automatica/bench/logs</code>.
+<p>Results append to <code>~/.aixyad/bench/results.jsonl</code>; server logs are in <code>~/.aixyad/bench/logs</code>.
 Tests: one answer (512-token prompt, 192 tokens), a 4k prompt, 4 agents at once, and a 16k-deep context. Each result records the
 background CPU load before each test, VRAM requested versus really held (<code>gpu_spill_mib</code>), and where the layers went.
 Add a profile to the user file (it can <code>extends:</code> another) to try a new flag. Stop the gateway first: only one copy of the model fits in RAM.</p>
@@ -239,6 +239,6 @@ Add a profile to the user file (it can <code>extends:</code> another) to try a n
 <tr><td>Prompt reading very slow at long context</td><td>VRAM spill: check <code>gpu_spill_mib</code>, set the sysmem fallback policy, close VRAM users, or use a smaller <code>-ub</code> or context.</td></tr>
 <tr><td>Agents time out on the first request</td><td>A fresh Claude Code prompt is 15&ndash;20k tokens; the first one takes minutes at a few hundred tokens/s. Later ones reuse the prompt cache.</td></tr>
 <tr><td>Job fails with "no JSON plan"</td><td>The planner's reply had no plan; open the job's events to see what it said, and retry with a more specific task.</td></tr>
-<tr><td>A backend stays in <i>error</i></td><td>It failed to start (see <code>~/.automatica/servers/&lt;profile&gt;.log</code>); press Load to retry after fixing.</td></tr>
+<tr><td>A backend stays in <i>error</i></td><td>It failed to start (see <code>~/.aixyad/servers/&lt;profile&gt;.log</code>); press Load to retry after fixing.</td></tr>
 </tbody></table></div>
 </main></body></html>

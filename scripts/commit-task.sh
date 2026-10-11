@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/commit-task.sh ======
+#====== AIxYad/scripts/commit-task.sh ======
 # Commits changes using the current task as commit message
 # Reads settings from settings.json
 # Usage: ./commit-task.sh [--push] [--message "optional override"]
@@ -78,7 +78,7 @@ elif [ "$USE_TASK_MSG" == "true" ] && [ -f "$CURRENT_TASK_FILE" ]; then
         COMMIT_MSG="Complete task from CURRENT_TASK.md"
     fi
 else
-    COMMIT_MSG="Update from Automatica"
+    COMMIT_MSG="Update from AIxYad"
 fi
 
 # Log operation start

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Automatica DB Actions — Structured database operations for AI agents.
+AIxYad DB Actions — Structured database operations for AI agents.
 
 These handlers are called by AgentExecutor when an AI requests a DB action.
 Each returns {success: bool, message: str} with formatted results.
@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from automatica_db import (
+from aixyad_db import (
     build_task_context,
     build_task_timeline,
     build_sprint_summary,
@@ -1028,7 +1028,7 @@ class DbActionHandler:
         if err:
             return {'success': False, 'message': f'ACTION: reserve_task — {err}'}
         agent = params.get('agent', actor)
-        from automatica_db import reserve_task
+        from aixyad_db import reserve_task
         ok = reserve_task(self.pdb, params['task_id'], agent)
         if ok:
             return {'success': True, 'message': f"ACTION: reserve_task {params['task_id']} — RESERVED by {agent}"}
@@ -1038,7 +1038,7 @@ class DbActionHandler:
         err = _require(params, 'task_id')
         if err:
             return {'success': False, 'message': f'ACTION: release_task — {err}'}
-        from automatica_db import release_task_reservation
+        from aixyad_db import release_task_reservation
         release_task_reservation(self.pdb, params['task_id'])
         return {'success': True, 'message': f"ACTION: release_task {params['task_id']} — RELEASED"}
 
@@ -1046,7 +1046,7 @@ class DbActionHandler:
         err = _require(params, 'task_id', 'agent')
         if err:
             return {'success': False, 'message': f'ACTION: assign_task — {err}'}
-        from automatica_db import assign_task
+        from aixyad_db import assign_task
         ok = assign_task(self.pdb, params['task_id'], params['agent'], params.get('provider', ''))
         if ok:
             return {'success': True, 'message': f"ACTION: assign_task {params['task_id']} — ASSIGNED to {params['agent']}"}
@@ -1056,7 +1056,7 @@ class DbActionHandler:
         if 'subtask_id' not in params:
             return {'success': False, 'message': 'ACTION: reserve_subtask — missing required param: subtask_id'}
         agent = params.get('agent', actor)
-        from automatica_db import reserve_subtask
+        from aixyad_db import reserve_subtask
         ok = reserve_subtask(self.pdb, int(params['subtask_id']), agent)
         if ok:
             return {'success': True, 'message': f"ACTION: reserve_subtask {params['subtask_id']} — RESERVED by {agent}"}
@@ -1068,7 +1068,7 @@ class DbActionHandler:
         err = _require(params, 'task_id')
         if err:
             return {'success': False, 'message': f'ACTION: discard_task — {err}'}
-        from automatica_db import discard_task
+        from aixyad_db import discard_task
         ok = discard_task(self.pdb, params['task_id'], actor, params.get('reason', ''))
         if ok:
             return {'success': True, 'message': f"ACTION: discard_task {params['task_id']} — ARCHIVED (can be restored)"}
@@ -1078,7 +1078,7 @@ class DbActionHandler:
         err = _require(params, 'task_id')
         if err:
             return {'success': False, 'message': f'ACTION: restore_task — {err}'}
-        from automatica_db import restore_task
+        from aixyad_db import restore_task
         ok = restore_task(self.pdb, params['task_id'], params.get('restore_to', 'backlog'))
         if ok:
             return {'success': True, 'message': f"ACTION: restore_task {params['task_id']} — RESTORED"}
@@ -1088,7 +1088,7 @@ class DbActionHandler:
         err = _require(params, 'file_path')
         if err:
             return {'success': False, 'message': f'ACTION: discard_file — {err}'}
-        from automatica_db import discard_file
+        from aixyad_db import discard_file
         from pathlib import Path
         project_dir = Path(params.get('project_dir', '.')).resolve()
         result = discard_file(self.pdb, project_dir, params['file_path'], actor, params.get('reason', ''))
@@ -1097,7 +1097,7 @@ class DbActionHandler:
         return {'success': False, 'message': f"ACTION: discard_file {params['file_path']} — FAILED (file not found)"}
 
     def _do_restore_file(self, params: dict, actor: str, session_id: str) -> dict:
-        from automatica_db import restore_file
+        from aixyad_db import restore_file
         from pathlib import Path
         project_dir = Path(params.get('project_dir', '.')).resolve()
         ok = restore_file(self.pdb, project_dir,
@@ -1108,7 +1108,7 @@ class DbActionHandler:
         return {'success': False, 'message': f"ACTION: restore_file — FAILED (not found in _Discarded)"}
 
     def _do_query_discarded_files(self, params: dict, actor: str, session_id: str) -> dict:
-        from automatica_db import get_discarded_files
+        from aixyad_db import get_discarded_files
         files = get_discarded_files(self.pdb,
                                      original_path=params.get('path'),
                                      since=params.get('since'),
@@ -1126,7 +1126,7 @@ class DbActionHandler:
         err = _require(params, 'file_path')
         if err:
             return {'success': False, 'message': f'ACTION: query_file_history — {err}'}
-        from automatica_db import get_file_history
+        from aixyad_db import get_file_history
         events = get_file_history(self.pdb, params['file_path'])
         lines = []
         for e in events:
@@ -1144,7 +1144,7 @@ class DbActionHandler:
 
     def _do_query_prompt_logs(self, params: dict, actor: str, session_id: str) -> dict:
         """Query stored prompt/response pairs."""
-        from automatica_db import get_prompt_logs
+        from aixyad_db import get_prompt_logs
         logs = get_prompt_logs(
             self.pdb,
             session_id=params.get('session_id'),
@@ -1176,7 +1176,7 @@ class DbActionHandler:
         err = _require(params, 'file_path')
         if err:
             return {'success': False, 'message': f'ACTION: lock_file — {err}'}
-        from automatica_db import lock_file
+        from aixyad_db import lock_file
         agent = params.get('agent', actor)
         result = lock_file(self.pdb, params['file_path'], agent, session_id)
         if result['locked']:
@@ -1187,7 +1187,7 @@ class DbActionHandler:
         err = _require(params, 'file_path')
         if err:
             return {'success': False, 'message': f'ACTION: unlock_file — {err}'}
-        from automatica_db import unlock_file
+        from aixyad_db import unlock_file
         unlock_file(self.pdb, params['file_path'], actor)
         return {'success': True, 'message': f"ACTION: unlock_file {params['file_path']} — UNLOCKED"}
 
@@ -1195,7 +1195,7 @@ class DbActionHandler:
         err = _require(params, 'file_path')
         if err:
             return {'success': False, 'message': f'ACTION: check_file_lock — {err}'}
-        from automatica_db import check_file_lock
+        from aixyad_db import check_file_lock
         lock = check_file_lock(self.pdb, params['file_path'])
         if lock:
             return {'success': True, 'message': f"ACTION: check_file_lock {params['file_path']} — LOCKED by {lock['locked_by']} since {lock['locked_at']}"}
@@ -1208,7 +1208,7 @@ class DbActionHandler:
         err = _require(params, 'description', 'section_type')
         if err:
             return {'success': False, 'message': f'ACTION: create_section — {err}'}
-        from automatica_db import create_code_section
+        from aixyad_db import create_code_section
         result = create_code_section(
             self.pdb,
             description=params['description'],
@@ -1236,7 +1236,7 @@ class DbActionHandler:
         err = _require(params, 'guid', 'new_description')
         if err:
             return {'success': False, 'message': f'ACTION: edit_section — {err}'}
-        from automatica_db import replace_code_section
+        from aixyad_db import replace_code_section
         result = replace_code_section(
             self.pdb,
             old_guid=params['guid'],
@@ -1257,7 +1257,7 @@ class DbActionHandler:
 
     def _do_find_section(self, params: dict, actor: str, session_id: str) -> dict:
         """Find GUID-tagged sections by GUID, description, file, or type."""
-        from automatica_db import get_code_section, search_code_sections
+        from aixyad_db import get_code_section, search_code_sections
         # Exact GUID lookup
         if params.get('guid'):
             section = get_code_section(self.pdb, params['guid'])
@@ -1305,7 +1305,7 @@ class DbActionHandler:
         err = _require(params, 'guid')
         if err:
             return {'success': False, 'message': f'ACTION: get_section_history — {err}'}
-        from automatica_db import get_revision_chain
+        from aixyad_db import get_revision_chain
         chain = get_revision_chain(self.pdb, params['guid'])
         if not chain:
             return {'success': False, 'message': f"ACTION: get_section_history — GUID {params['guid']} NOT FOUND"}
@@ -1455,7 +1455,7 @@ class DbActionHandler:
 
 if __name__ == "__main__":
     import tempfile
-    from automatica_db import init_project_db
+    from aixyad_db import init_project_db
 
     print("=== DbActionHandler self-test ===\n")
 

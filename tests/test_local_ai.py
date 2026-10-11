@@ -325,12 +325,20 @@ def test_gateway_requires_token(gateway):
     assert code == 200 and status["backends"][0]["name"] == "lan" and status["routes"] == {"worker": "lan"}
 
 
+def test_gateway_favicon_served_without_auth(gateway):
+    base, gw = gateway
+    code, headers, body = call(base, "/favicon.svg")
+    assert code == 200
+    assert headers.get("Content-Type") == "image/svg+xml"
+    assert b"<svg" in body
+
+
 def test_gateway_routes_and_never_forwards_its_token(gateway):
     base, gw = gateway
     code, headers, body = call(base, "/v1/chat/completions", body={"model": "worker", "messages": []},
                                headers={"x-api-key": gw.token})
     assert code == 200 and json.loads(body)["model"] == "small-model"
-    assert headers["X-Automatica-Backend"] == "lan"
+    assert headers["X-AIxYad-Backend"] == "lan"
     seen = FakeBackend.seen[-1]
     assert seen["body"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert seen["auth"] == "Bearer backend-key" and seen["x-api-key"] is None
@@ -365,7 +373,7 @@ def test_ui_token_login_sets_cookie(gateway):
     cookie = caught.value.headers["Set-Cookie"]
     assert cookie.startswith(f"{COOKIE}={gw.token}") and "HttpOnly" in cookie and "SameSite=Strict" in cookie
     code, _, page = call(base, "/ui", headers={"Cookie": f"{COOKIE}={gw.token}"})
-    assert code == 200 and b"<title>Local AI</title>" in page
+    assert code == 200 and "<title>AI × יד</title>".encode("utf-8") in page
 
 
 def test_ensure_token_is_stable(tmp_path):

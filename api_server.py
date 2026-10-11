@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Automatica API Server — FastAPI + Uvicorn REST + WebSocket server.
+AIxYad API Server — FastAPI + Uvicorn REST + WebSocket server.
 
-Runs in a daemon thread so it can be embedded inside `automatica --Serve`
+Runs in a daemon thread so it can be embedded inside `aixyad --Serve`
 or started from the KivyMD app (server mode).
 
 Usage (headless):
-    automatica --Serve [--Host 0.0.0.0] [--Port 8765]
+    aixyad --Serve [--Host 0.0.0.0] [--Port 8765]
 
 Usage (from code):
     from api_server import APIServer
@@ -35,6 +35,8 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional
+
+import aixyad_paths
 
 # ── B-17 / C-06: Pydantic request models (module-level so FastAPI/OpenAPI resolves them) ──
 
@@ -91,16 +93,16 @@ _pending_tokens: dict = {}  # token -> {created: timestamp}
 def _get_global_conn():
     """Get or create the global DB connection for auth endpoints."""
     from pathlib import Path
-    import automatica_db as adb
-    db_path = Path.home() / '.automatica' / 'automatica.db'
+    import aixyad_db as adb
+    db_path = aixyad_paths.global_db_path()
     return adb.init_global_db(db_path)
 
 
 def _safe_load_settings() -> dict:
-    """Read ~/.automatica/settings.json; return {} on any error.
+    """Read ~/.aixyad/settings.json; return {} on any error.
     Used by the startup-gate + auth-middleware before _build_app spins up."""
     from pathlib import Path
-    settings_path = Path.home() / '.automatica' / 'settings.json'
+    settings_path = aixyad_paths.home() / 'settings.json'
     if not settings_path.exists():
         return {}
     try:
@@ -120,7 +122,7 @@ def _push_event_sync(event_type: str, data: dict) -> None:
         _mod = importlib.import_module(__name__)
         # Walk all live APIServer thread locals to find a running app
         for _thread in threading.enumerate():
-            if getattr(_thread, 'name', '').startswith('automatica-api-server'):
+            if getattr(_thread, 'name', '').startswith('aixyad-api-server'):
                 # The server is running; the app state is held inside the
                 # uvicorn server which doesn't expose it directly, so we rely
                 # on the _push_event_sync_target set by the server at startup.
@@ -150,7 +152,7 @@ class APIServer:
         if self._thread and self._thread.is_alive():
             return
         self._thread = threading.Thread(target=self._run, daemon=True,
-                                        name='automatica-api-server')
+                                        name='aixyad-api-server')
         self._thread.start()
 
     def stop(self):
@@ -175,23 +177,23 @@ class APIServer:
             # processes can still hit it but the attack surface is only this PC).
             _host_is_loopback = self.host in ('127.0.0.1', 'localhost', '::1')
             _has_key = bool(
-                os.environ.get('AUTOMATICA_API_KEY', '')
+                aixyad_paths.env('API_KEY', '')
                 or _safe_load_settings().get('api_key', '')
             )
-            _force_open = os.environ.get('AUTOMATICA_ALLOW_UNAUTH', '') == '1'
+            _force_open = aixyad_paths.env('ALLOW_UNAUTH', '') == '1'
             if not _host_is_loopback and not _has_key and not _force_open:
                 raise RuntimeError(
                     f"REFUSING to bind {self.host}:{self.port} without an API key. "
-                    f"Either: set AUTOMATICA_API_KEY env var (preferred), or write "
-                    f"'api_key' into ~/.automatica/settings.json, or override the "
-                    f"safety with AUTOMATICA_ALLOW_UNAUTH=1 (NOT recommended). "
+                    f"Either: set AIXYAD_API_KEY env var (preferred), or write "
+                    f"'api_key' into ~/.aixyad/settings.json, or override the "
+                    f"safety with AIXYAD_ALLOW_UNAUTH=1 (NOT recommended). "
                     f"Loopback-only deployments (127.0.0.1) skip this check."
                 )
 
             app = self._build_app()
 
             # C-12: optional SSL support from settings.json
-            settings_path = Path.home() / '.automatica' / 'settings.json'
+            settings_path = aixyad_paths.home() / 'settings.json'
             cfg: dict = {}
             if settings_path.exists():
                 try:
@@ -232,7 +234,7 @@ class APIServer:
         except ImportError:
             # fastapi/uvicorn not installed — warn clearly
             print('[API SERVER] fastapi/uvicorn not installed. '
-                  'Run: pip install automatica[server]')
+                  'Run: pip install aixyad[server]')
         except Exception as exc:
             print(f'[API SERVER] Error: {exc}')
 
@@ -255,18 +257,18 @@ class APIServer:
 
         # ── B-18 / F-18: FastAPI app with full metadata ──────────────────────
         app = FastAPI(
-            title='Automatica API',
+            title='AIxYad API',
             version='1.0.0',
             description=(
-                'REST + WebSocket API for Automatica autonomous agent system.\n\n'
+                'REST + WebSocket API for AIxYad autonomous agent system.\n\n'
                 'See /docs for interactive documentation, /redoc for ReDoc, '
                 'or /openapi.json for the raw OpenAPI spec.'
             ),
             docs_url='/docs',
             redoc_url='/redoc',
             contact={
-                'name': 'Automatica Project',
-                'url': 'https://github.com/andrewkwatts-maker/Automatica',
+                'name': 'AIxYad Project',
+                'url': 'https://github.com/andrewkwatts-maker/AIxYad',
             },
             license_info={
                 'name': 'MIT',
@@ -276,7 +278,7 @@ class APIServer:
 
         # ── C-05: Restricted CORS ─────────────────────────────────────────────
         def _get_allowed_origins() -> list:
-            settings_path = _Path.home() / '.automatica' / 'settings.json'
+            settings_path = aixyad_paths.home() / 'settings.json'
             try:
                 cfg = _json.loads(settings_path.read_text()) if settings_path.exists() else {}
                 origins = cfg.get('allowed_origins', ['http://localhost', 'http://127.0.0.1'])
@@ -330,7 +332,7 @@ class APIServer:
                 token = (request.headers.get('x-api-key') or
                          request.query_params.get('token') or '')
             expected_key = (
-                os.environ.get('AUTOMATICA_API_KEY', '')
+                aixyad_paths.env('API_KEY', '')
                 or _safe_load_settings().get('api_key', '')
             )
             if not expected_key:
@@ -340,7 +342,7 @@ class APIServer:
                     return JSONResponse(
                         {'error': 'Authentication required (server has no API key '
                                   'configured and you are not on loopback). Set '
-                                  'AUTOMATICA_API_KEY env var or settings.json '
+                                  'AIXYAD_API_KEY env var or settings.json '
                                   'api_key field.'},
                         status_code=401,
                     )
@@ -374,7 +376,7 @@ class APIServer:
         _security_scheme = HTTPBearer(auto_error=False)
 
         def _load_api_key_from_settings() -> str:
-            settings_path = _Path.home() / '.automatica' / 'settings.json'
+            settings_path = aixyad_paths.home() / 'settings.json'
             try:
                 cfg = _json.loads(settings_path.read_text()) if settings_path.exists() else {}
                 stored = cfg.get('api_key', '')
@@ -394,7 +396,7 @@ class APIServer:
             credentials: HTTPAuthorizationCredentials = Security(_security_scheme),
         ):
             """C-15: Verify Bearer token. Allows all if no key configured."""
-            expected = os.environ.get('AUTOMATICA_API_KEY', '') or _load_api_key_from_settings()
+            expected = aixyad_paths.env('API_KEY', '') or _load_api_key_from_settings()
             if not expected:
                 return  # No auth configured — open server
             # C-16: also accept session tokens
@@ -444,14 +446,14 @@ class APIServer:
 
         # ── Helper: global DB connection ─────────────────────────────────────
         def _get_global_conn():
-            import automatica_db as adb
-            db_path = _Path.home() / '.automatica' / 'automatica.db'
+            import aixyad_db as adb
+            db_path = aixyad_paths.global_db_path()
             return adb.init_global_db(db_path)
 
         # ── Settings (api_key) ───────────────────────────────────────────────
         def _get_settings() -> dict:
             from security_utils import validate_settings as _vs
-            settings_path = _Path.home() / '.automatica' / 'settings.json'
+            settings_path = aixyad_paths.home() / 'settings.json'
             if settings_path.exists():
                 try:
                     raw = _json.loads(settings_path.read_text())
@@ -476,7 +478,7 @@ class APIServer:
 
         # ── Auth helper ──────────────────────────────────────────────────────
         def _check_ws_auth(websocket: WebSocket) -> bool:
-            expected = os.environ.get('AUTOMATICA_API_KEY', '') or _load_api_key_from_settings()
+            expected = aixyad_paths.env('API_KEY', '') or _load_api_key_from_settings()
             if not expected:
                 # No key configured: only allow loopback callers (startup
                 # gate already prevents non-loopback bind without a key,
@@ -507,7 +509,7 @@ class APIServer:
         @app.post('/api/auth/login')
         def login(body: dict):
             """Issue a session token valid for SESSION_TTL seconds."""
-            expected = os.environ.get('AUTOMATICA_API_KEY', '') or _load_api_key_from_settings()
+            expected = aixyad_paths.env('API_KEY', '') or _load_api_key_from_settings()
             if expected and body.get('api_key') != expected:
                 raise HTTPException(status_code=401, detail='Invalid API key')
             token = _secrets.token_hex(32)
@@ -528,7 +530,7 @@ class APIServer:
             token = _secrets.token_urlsafe(32)
             # Store pending token (in-memory; persisted when device claims it)
             _pending_tokens[token] = {'created': __import__('time').time()}
-            pair_url = f"automatica://pair?token={token}&host={request.base_url.hostname}&port=8765"
+            pair_url = f"aixyad://pair?token={token}&host={request.base_url.hostname}&port=8765"
             try:
                 import qrcode, io, base64
                 qr = qrcode.make(pair_url)
@@ -552,7 +554,7 @@ class APIServer:
                 return JSONResponse({'error': 'Invalid or expired token'}, status_code=403)
             del _pending_tokens[token]
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
                 global_conn = _get_global_conn()
                 adb.register_device(global_conn, device_id, device_name, platform, token)
                 adb.log_auth_event(global_conn, 'pair', device_id, device_name,
@@ -566,7 +568,7 @@ class APIServer:
         async def list_devices_endpoint():
             """H2-09: List all paired devices."""
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
                 return JSONResponse(adb.list_devices(_get_global_conn()))
             except Exception as exc:
                 return JSONResponse({'error': str(exc)}, status_code=500)
@@ -576,7 +578,7 @@ class APIServer:
         async def revoke_device_endpoint(device_id: str, request: Request):
             """H2-11: Revoke a paired device."""
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
                 conn = _get_global_conn()
                 ok = adb.revoke_device(conn, device_id)
                 adb.log_auth_event(conn, 'revoke', device_id,
@@ -590,7 +592,7 @@ class APIServer:
         async def get_audit_log_endpoint(limit: int = 100):
             """H2-08: Get auth audit log."""
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
                 return JSONResponse(adb.get_auth_audit_log(_get_global_conn(), limit))
             except Exception as exc:
                 return JSONResponse({'error': str(exc)}, status_code=500)
@@ -641,7 +643,7 @@ class APIServer:
         def get_tasks(project_id: int):
             """Return tasks for the given project from its project DB."""
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
                 conn = _get_global_conn()
                 row = conn.execute(
                     "SELECT directory FROM known_projects WHERE id = ?",
@@ -666,7 +668,7 @@ class APIServer:
         def create_task(project_id: int, body: dict):
             """Create a new task in the project DB."""
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
                 conn = _get_global_conn()
                 row = conn.execute(
                     "SELECT directory FROM known_projects WHERE id = ?",
@@ -785,7 +787,7 @@ class APIServer:
                 raise HTTPException(status_code=400, detail='project_id required')
             dry_run = body.get('dry_run', False)
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
                 from sprint_runner import SprintRunner
 
                 conn = _get_global_conn()
@@ -802,7 +804,7 @@ class APIServer:
                 if dry_run:
                     # WP-5.4: dry-run — load pipeline config, validate stages, return report
                     import json as _j
-                    stages_file = project_dir / 'automatica' / 'pipeline_stages.json'
+                    stages_file = project_dir / 'aixyad' / 'pipeline_stages.json'
                     stages = []
                     if stages_file.exists():
                         try:
@@ -906,7 +908,7 @@ class APIServer:
 
                 project_dir = row['directory']
                 # Check on_commit trigger enabled
-                triggers_file = Path(project_dir) / 'automatica' / 'triggers.json'
+                triggers_file = Path(project_dir) / 'aixyad' / 'triggers.json'
                 triggers = []
                 if triggers_file.exists():
                     triggers = _j.loads(triggers_file.read_text())
@@ -940,7 +942,7 @@ class APIServer:
         def get_logs(limit: int = 200, project_id: Optional[int] = None):
             """Return action log entries, optionally filtered by project."""
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
 
                 if project_id is not None:
                     conn = _get_global_conn()
@@ -1072,7 +1074,7 @@ class APIServer:
         def list_sprints(project_id: Optional[int] = None):
             """List sprints, optionally filtered by project."""
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
 
                 if project_id is not None:
                     conn = _get_global_conn()
@@ -1101,7 +1103,7 @@ class APIServer:
         def create_sprint(body: 'SprintCreate'):
             """Create a new sprint in the given project DB."""
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
 
                 conn = _get_global_conn()
                 row = conn.execute(
@@ -1131,7 +1133,7 @@ class APIServer:
         def update_task(task_id: int, body: 'TaskUpdate'):
             """Update allowed fields on a task (looks up project by task_id)."""
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
 
                 conn = _get_global_conn()
                 projects = conn.execute(
@@ -1173,7 +1175,7 @@ class APIServer:
         def delete_task(task_id: int):
             """Mark a task as deleted (soft delete)."""
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
 
                 conn = _get_global_conn()
                 projects = conn.execute(
@@ -1246,7 +1248,7 @@ class APIServer:
             import json as _json
             settings = _get_settings()
             std_dir_path = settings.get('standards_dir', '')
-            std_dir = Path(std_dir_path) if std_dir_path else Path.home() / '.automatica' / 'standards'
+            std_dir = Path(std_dir_path) if std_dir_path else aixyad_paths.home() / 'standards'
             if not std_dir.exists():
                 return []
             result = []
@@ -1268,7 +1270,7 @@ class APIServer:
             """Write a standards markdown file."""
             settings = _get_settings()
             std_dir_path = settings.get('standards_dir', '')
-            std_dir = Path(std_dir_path) if std_dir_path else Path.home() / '.automatica' / 'standards'
+            std_dir = Path(std_dir_path) if std_dir_path else aixyad_paths.home() / 'standards'
             std_dir.mkdir(parents=True, exist_ok=True)
             # Sanitise name: keep only safe filename chars
             safe_name = ''.join(c for c in body.name if c.isalnum() or c in ' _-.')
@@ -1289,7 +1291,7 @@ class APIServer:
         def save_settings_route(body: dict):
             """Merge body dict into settings.json and persist."""
             import json as _json
-            settings_path = Path.home() / '.automatica' / 'settings.json'
+            settings_path = aixyad_paths.home() / 'settings.json'
             settings_path.parent.mkdir(parents=True, exist_ok=True)
             existing = _get_settings()
             existing.update(body)
@@ -1329,7 +1331,7 @@ class APIServer:
                 raise HTTPException(status_code=400, detail='name is required')
             provider_type = body.get('provider_type', body.get('type', 'api')).strip()
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
                 conn = _get_global_conn()
                 result = adb.add_provider(
                     conn,
@@ -1361,7 +1363,7 @@ class APIServer:
 
             def _run():
                 try:
-                    import automatica_db as adb
+                    import aixyad_db as adb
                     gconn = _get_global_conn()
                     # resolve project
                     if project_id:
@@ -1446,7 +1448,7 @@ class APIServer:
 
             # Send last 50 log entries on connect
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
                 conn = _get_global_conn()
                 first = conn.execute(
                     "SELECT directory FROM known_projects LIMIT 1"
@@ -1524,7 +1526,7 @@ class APIServer:
         def _get_project_path(project_id: int) -> Optional[str]:
             """Look up project directory from global DB by project_id."""
             try:
-                import automatica_db as adb
+                import aixyad_db as adb
                 conn = _get_global_conn()
                 row = conn.execute(
                     'SELECT directory FROM known_projects WHERE id=?', (project_id,)
@@ -1710,7 +1712,7 @@ class APIServer:
         # round-trips through the API instead of local-JSON-only persistence.
         @app.get('/api/projects/{project_id}/triggers')
         def list_project_triggers(project_id: int):
-            from automatica_db import init_project_db
+            from aixyad_db import init_project_db
             row = _get_global_conn().execute(
                 'SELECT directory FROM known_projects WHERE id = ?', (project_id,)
             ).fetchone()
@@ -1727,7 +1729,7 @@ class APIServer:
         @app.post('/api/projects/{project_id}/triggers',
                   dependencies=[Depends(_verify_token)])
         def create_project_trigger(project_id: int, body: dict):
-            from automatica_db import init_project_db
+            from aixyad_db import init_project_db
             import json as _json
             row = _get_global_conn().execute(
                 'SELECT directory FROM known_projects WHERE id = ?', (project_id,)
@@ -1751,7 +1753,7 @@ class APIServer:
         @app.put('/api/projects/{project_id}/triggers/{trigger_id}',
                  dependencies=[Depends(_verify_token)])
         def update_project_trigger(project_id: int, trigger_id: int, body: dict):
-            from automatica_db import init_project_db
+            from aixyad_db import init_project_db
             import json as _json
             row = _get_global_conn().execute(
                 'SELECT directory FROM known_projects WHERE id = ?', (project_id,)
@@ -1784,7 +1786,7 @@ class APIServer:
         @app.delete('/api/projects/{project_id}/triggers/{trigger_id}',
                     dependencies=[Depends(_verify_token)])
         def delete_project_trigger(project_id: int, trigger_id: int):
-            from automatica_db import init_project_db
+            from aixyad_db import init_project_db
             row = _get_global_conn().execute(
                 'SELECT directory FROM known_projects WHERE id = ?', (project_id,)
             ).fetchone()
@@ -1799,7 +1801,7 @@ class APIServer:
         @app.put('/api/projects/{project_id}/pipeline_config',
                  dependencies=[Depends(_verify_token)])
         def set_project_pipeline_config(project_id: int, body: dict):
-            from automatica_db import init_project_db, set_project_setting_json
+            from aixyad_db import init_project_db, set_project_setting_json
             row = _get_global_conn().execute(
                 'SELECT directory FROM known_projects WHERE id = ?', (project_id,)
             ).fetchone()
@@ -1814,13 +1816,13 @@ class APIServer:
         # ── Configs CRUD (global) + per-project overrides ─────────────────────
         @app.get('/api/configs')
         def list_configs(project_id: int | None = None):
-            from automatica_db import get_configs as _get_configs
+            from aixyad_db import get_configs as _get_configs
             conn = _get_global_conn()
             return {'configs': _get_configs(conn)}
 
         @app.post('/api/configs', dependencies=[Depends(_verify_token)])
         def create_config_route(body: dict):
-            from automatica_db import create_config as _create_config
+            from aixyad_db import create_config as _create_config
             conn = _get_global_conn()
             cid = _create_config(
                 conn,
@@ -1854,7 +1856,7 @@ class APIServer:
 
             Body: {name?, description?, overrides?: {scope: {key: value}}}
             """
-            from automatica_db import set_config_override as _set_override
+            from aixyad_db import set_config_override as _set_override
             conn = _get_global_conn()
             allowed = {'name', 'description', 'parent_config_id'}
             sets, vals = [], []
@@ -1893,7 +1895,7 @@ class APIServer:
 
         @app.get('/api/projects/{project_id}/config-overrides')
         def get_project_config_overrides(project_id: int):
-            from automatica_db import get_config_overrides as _get_overrides
+            from aixyad_db import get_config_overrides as _get_overrides
             conn = _get_global_conn()
             row = conn.execute(
                 'SELECT config_id FROM known_projects WHERE id = ?', (project_id,)
@@ -1905,7 +1907,7 @@ class APIServer:
         @app.put('/api/projects/{project_id}/config-overrides/{key}',
                  dependencies=[Depends(_verify_token)])
         def set_project_config_override(project_id: int, key: str, body: dict):
-            from automatica_db import (
+            from aixyad_db import (
                 set_config_override as _set_override,
                 delete_config_override as _del_override,
             )
@@ -1932,15 +1934,15 @@ class APIServer:
             safe = _re.sub(r'[^A-Za-z0-9._-]', '', filename)
             if not safe:
                 raise HTTPException(400, 'invalid filename')
-            sdir = Path.home() / '.automatica' / 'standards'
+            sdir = aixyad_paths.home() / 'standards'
             target = sdir / safe
             if not target.exists():
                 raise HTTPException(404, 'standard not found')
             target.unlink()
             return {'success': True}
 
-        # ── Pipelines CRUD (file-backed: ~/.automatica/pipelines.json) ────────
-        _PIPELINES_FILE = Path.home() / '.automatica' / 'pipelines.json'
+        # ── Pipelines CRUD (file-backed: ~/.aixyad/pipelines.json) ────────
+        _PIPELINES_FILE = aixyad_paths.home() / 'pipelines.json'
 
         def _load_pipelines_file() -> list:
             import json as _j
@@ -2023,8 +2025,8 @@ class APIServer:
             _save_pipelines_file(new_list)
             return {'success': True}
 
-        # ── Global triggers (file-backed: ~/.automatica/triggers.json) ────────
-        _TRIGGERS_FILE = Path.home() / '.automatica' / 'triggers.json'
+        # ── Global triggers (file-backed: ~/.aixyad/triggers.json) ────────
+        _TRIGGERS_FILE = aixyad_paths.home() / 'triggers.json'
 
         def _load_triggers_file(path: Path) -> list:
             import json as _j
@@ -2066,14 +2068,14 @@ class APIServer:
             triggers = body.get('triggers', body if isinstance(body, list) else [])
             if not isinstance(triggers, list):
                 raise HTTPException(400, 'expected list of triggers')
-            tpath = Path(row['directory']) / 'automatica' / 'triggers.json'
+            tpath = Path(row['directory']) / 'aixyad' / 'triggers.json'
             _save_triggers_file(tpath, triggers)
             return {'success': True, 'count': len(triggers)}
 
         # ── Managers CRUD ─────────────────────────────────────────────────────
         @app.get('/api/managers')
         def list_managers():
-            from automatica_db import get_managers as _gm, get_manager_projects as _gmp
+            from aixyad_db import get_managers as _gm, get_manager_projects as _gmp
             conn = _get_global_conn()
             managers = _gm(conn)
             for m in managers:
@@ -2082,7 +2084,7 @@ class APIServer:
 
         @app.post('/api/managers', dependencies=[Depends(_verify_token)])
         def create_manager_route(body: dict):
-            from automatica_db import (
+            from aixyad_db import (
                 create_manager as _cm,
                 add_manager_project as _amp,
             )
@@ -2104,7 +2106,7 @@ class APIServer:
         @app.patch('/api/managers/{manager_id}',
                    dependencies=[Depends(_verify_token)])
         def patch_manager_route(manager_id: int, body: dict):
-            from automatica_db import (
+            from aixyad_db import (
                 update_manager as _um,
                 add_manager_project as _amp,
                 remove_manager_project as _rmp,
@@ -2273,7 +2275,7 @@ class APIServer:
 
         # ── Action log (project-scoped) ───────────────────────────────────────
         def _open_pconn(project_id: int):
-            from automatica_db import init_project_db
+            from aixyad_db import init_project_db
             row = _get_global_conn().execute(
                 'SELECT directory FROM known_projects WHERE id = ?',
                 (project_id,),
@@ -2353,7 +2355,7 @@ class APIServer:
         # ── Subtasks ──────────────────────────────────────────────────────────
         @app.get('/api/tasks/{task_display_id}/subtasks')
         def get_subtasks_route(task_display_id: str, project_id: int):
-            from automatica_db import get_subtasks as _gs
+            from aixyad_db import get_subtasks as _gs
             pconn = _open_pconn(project_id)
             try:
                 return {'subtasks': _gs(pconn, task_display_id)}
@@ -2363,7 +2365,7 @@ class APIServer:
         @app.post('/api/tasks/{task_display_id}/subtasks',
                   dependencies=[Depends(_verify_token)])
         def create_subtask_route(task_display_id: str, body: dict):
-            from automatica_db import create_subtask as _cs
+            from aixyad_db import create_subtask as _cs
             pconn = _open_pconn(body.get('project_id', 0))
             try:
                 result = _cs(pconn, task_display_id,
@@ -2377,7 +2379,7 @@ class APIServer:
         @app.post('/api/subtasks/{subtask_display_id}/complete',
                   dependencies=[Depends(_verify_token)])
         def complete_subtask_route(subtask_display_id: str, body: dict):
-            from automatica_db import complete_subtask as _comp
+            from aixyad_db import complete_subtask as _comp
             pconn = _open_pconn(body.get('project_id', 0))
             try:
                 _comp(pconn, subtask_display_id, body.get('result', ''))
@@ -2389,7 +2391,7 @@ class APIServer:
         # ── Retrospectives ────────────────────────────────────────────────────
         @app.get('/api/sprints/{sprint_id}/retrospective')
         def get_retrospective_route(sprint_id: int, project_id: int):
-            from automatica_db import get_retrospective as _gr
+            from aixyad_db import get_retrospective as _gr
             pconn = _open_pconn(project_id)
             try:
                 return {'retro': _gr(pconn, sprint_id) or {}}
@@ -2399,7 +2401,7 @@ class APIServer:
         @app.post('/api/sprints/{sprint_id}/retrospective',
                   dependencies=[Depends(_verify_token)])
         def save_retrospective_route(sprint_id: int, body: dict):
-            from automatica_db import save_retrospective as _sr
+            from aixyad_db import save_retrospective as _sr
             pconn = _open_pconn(body.get('project_id', 0))
             try:
                 _sr(pconn, sprint_id, body.get('content', ''))
@@ -2411,7 +2413,7 @@ class APIServer:
         # ── Comments (task-level) ─────────────────────────────────────────────
         @app.get('/api/tasks/{task_display_id}/comments')
         def get_comments_route(task_display_id: str, project_id: int):
-            from automatica_db import get_comments as _gc
+            from aixyad_db import get_comments as _gc
             pconn = _open_pconn(project_id)
             try:
                 return {'comments': _gc(pconn, task_display_id)}
@@ -2421,7 +2423,7 @@ class APIServer:
         @app.post('/api/tasks/{task_display_id}/comments',
                   dependencies=[Depends(_verify_token)])
         def add_comment_route(task_display_id: str, body: dict):
-            from automatica_db import add_comment as _ac
+            from aixyad_db import add_comment as _ac
             pconn = _open_pconn(body.get('project_id', 0))
             try:
                 result = _ac(pconn, task_display_id,
@@ -2435,7 +2437,7 @@ class APIServer:
         # ── Agent stats (project-scoped) ──────────────────────────────────────
         @app.get('/api/projects/{project_id}/agent-stats')
         def get_all_agent_stats_route(project_id: int):
-            from automatica_db import get_all_agent_stats as _gas
+            from aixyad_db import get_all_agent_stats as _gas
             pconn = _open_pconn(project_id)
             try:
                 return {'stats': _gas(pconn)}
@@ -2444,7 +2446,7 @@ class APIServer:
 
         @app.get('/api/projects/{project_id}/agents/{slug}/stats')
         def get_agent_stats_route(project_id: int, slug: str):
-            from automatica_db import get_agent_stats as _gas1
+            from aixyad_db import get_agent_stats as _gas1
             pconn = _open_pconn(project_id)
             try:
                 return {'stats': _gas1(pconn, slug)}
@@ -2454,7 +2456,7 @@ class APIServer:
         # ── Sprint cost summary ───────────────────────────────────────────────
         @app.get('/api/sprints/{sprint_id}/cost-summary')
         def get_sprint_cost_route(sprint_id: int, project_id: int):
-            from automatica_db import get_sprint_cost_summary as _gsc
+            from aixyad_db import get_sprint_cost_summary as _gsc
             pconn = _open_pconn(project_id)
             try:
                 return _gsc(pconn, sprint_id) or {}
@@ -2464,7 +2466,7 @@ class APIServer:
         # ── Complexity routing (global) ───────────────────────────────────────
         @app.get('/api/complexity-routing')
         def get_complexity_routing_route(project_name: str = '*'):
-            from automatica_db import get_complexity_routing as _gcr
+            from aixyad_db import get_complexity_routing as _gcr
             try:
                 return {'routing': _gcr(_get_global_conn(), project_name)}
             except Exception:
@@ -2473,7 +2475,7 @@ class APIServer:
         @app.post('/api/complexity-routing',
                   dependencies=[Depends(_verify_token)])
         def upsert_complexity_routing_route(body: dict):
-            from automatica_db import setup_complexity_routing_by_name as _scr
+            from aixyad_db import setup_complexity_routing_by_name as _scr
             try:
                 _scr(_get_global_conn(),
                      project_name=body.get('project_name', '*'),
@@ -2489,7 +2491,7 @@ class APIServer:
         @app.post('/api/projects/touch',
                   dependencies=[Depends(_verify_token)])
         def touch_project_route(body: dict):
-            from automatica_db import update_project_last_opened as _upd
+            from aixyad_db import update_project_last_opened as _upd
             try:
                 _upd(_get_global_conn(), body.get('directory', ''))
                 _get_global_conn().commit()
@@ -2501,7 +2503,7 @@ class APIServer:
         @app.post('/api/projects',
                   dependencies=[Depends(_verify_token)])
         def create_project_route(body: dict):
-            from automatica_db import register_project as _rp
+            from aixyad_db import register_project as _rp
             try:
                 pid = _rp(
                     _get_global_conn(),
@@ -2517,7 +2519,7 @@ class APIServer:
         # ── Generic per-project settings ──────────────────────────────────────
         @app.get('/api/projects/{project_id}/settings/{key}')
         def get_project_setting_route(project_id: int, key: str):
-            from automatica_db import get_project_setting as _gps
+            from aixyad_db import get_project_setting as _gps
             pconn = _open_pconn(project_id)
             try:
                 value = _gps(pconn, key, default='')
@@ -2528,7 +2530,7 @@ class APIServer:
         @app.put('/api/projects/{project_id}/settings/{key}',
                  dependencies=[Depends(_verify_token)])
         def set_project_setting_route(project_id: int, key: str, body: dict):
-            from automatica_db import set_project_setting as _sps
+            from aixyad_db import set_project_setting as _sps
             pconn = _open_pconn(project_id)
             try:
                 _sps(pconn, key, str(body.get('value', '')))
@@ -2623,7 +2625,7 @@ class APIServer:
         @app.delete('/api/sprint-tasks/{sprint_task_id}',
                     dependencies=[Depends(_verify_token)])
         def remove_sprint_task_route(sprint_task_id: int, project_id: int):
-            from automatica_db import remove_task_from_sprint as _rts
+            from aixyad_db import remove_task_from_sprint as _rts
             pconn = _open_pconn(project_id)
             try:
                 _rts(pconn, sprint_task_id)
@@ -2657,7 +2659,7 @@ class APIServer:
         # ── Manager projects ──────────────────────────────────────────────────
         @app.get('/api/managers/{manager_id}/projects')
         def get_manager_projects_route(manager_id: int):
-            from automatica_db import get_manager_projects as _gmp
+            from aixyad_db import get_manager_projects as _gmp
             try:
                 return {'projects': _gmp(_get_global_conn(), manager_id)}
             except Exception:
@@ -2666,7 +2668,7 @@ class APIServer:
         @app.post('/api/managers/{manager_id}/projects',
                   dependencies=[Depends(_verify_token)])
         def add_manager_project_route(manager_id: int, body: dict):
-            from automatica_db import add_manager_project as _amp
+            from aixyad_db import add_manager_project as _amp
             try:
                 _amp(_get_global_conn(), manager_id,
                      body.get('directory', body.get('project_dir', '')))
@@ -2678,7 +2680,7 @@ class APIServer:
         @app.delete('/api/managers/{manager_id}/projects',
                     dependencies=[Depends(_verify_token)])
         def remove_manager_project_route(manager_id: int, directory: str):
-            from automatica_db import remove_manager_project as _rmp
+            from aixyad_db import remove_manager_project as _rmp
             try:
                 _rmp(_get_global_conn(), manager_id, directory)
                 _get_global_conn().commit()

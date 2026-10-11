@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-sprint_summary.py — print a human-readable sprint table for an Automatica project.
+sprint_summary.py — print a human-readable sprint table for an AIxYad project.
 
 Usage:
     python scripts/sprint_summary.py --project PATH
@@ -13,6 +13,10 @@ import sqlite3
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import aixyad_paths
+
 
 def _fmt(value, width: int, align: str = "<") -> str:
     s = str(value) if value is not None else "-"
@@ -22,7 +26,7 @@ def _fmt(value, width: int, align: str = "<") -> str:
 
 
 def print_sprint_table(project_dir: Path, limit: int = 20) -> int:
-    db_path = project_dir / ".automatica" / "project.db"
+    db_path = aixyad_paths.project_state(project_dir) / "project.db"
     if not db_path.exists():
         print(f"ERROR: No project DB found at {db_path}", file=sys.stderr)
         return 1
@@ -87,7 +91,7 @@ def print_sprint_table(project_dir: Path, limit: int = 20) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Print sprint table for an Automatica project")
+    parser = argparse.ArgumentParser(description="Print sprint table for an AIxYad project")
     parser.add_argument("--project", required=True, help="Path to project root directory")
     parser.add_argument("--limit", type=int, default=20, help="Max sprints to show (default: 20)")
     args = parser.parse_args()

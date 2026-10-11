@@ -34,7 +34,7 @@ def evaluate_plan_completeness(
         }
     """
     evaluation_prompt = {
-        'protocol': 'automatica-agent/1.0',
+        'protocol': 'aixyad-agent/1.0',
         'session_id': session_id,
         'sequence': -1,  # pre-loop sentinel
         'task': task,

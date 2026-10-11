@@ -29,6 +29,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+import aixyad_paths
+
 from local_ai.llama_server import LlamaServer, ServerStartError, gpu_dedicated_mib, gpu_memory_used_mib
 from local_ai.profiles import ServerProfile, load_profiles
 
@@ -221,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     global DEEP_TOKENS, QUIET_BELOW, QUIET_WAIT_S
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("profiles", nargs="*")
-    parser.add_argument("--out", type=Path, default=Path.home() / ".automatica" / "bench")
+    parser.add_argument("--out", type=Path, default=aixyad_paths.home() / "bench")
     parser.add_argument("--tests", default=",".join(ALL_TESTS))
     parser.add_argument("--probe", action="store_true", help="print projected VRAM only")
     parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",

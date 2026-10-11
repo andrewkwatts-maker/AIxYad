@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#====== Automatica/ollama_utils.py ======
+#====== AIxYad/ollama_utils.py ======
 #!copyright (c) 2025 Andrew Keith Watts. All rights reserved.
 """
 Shared utilities for querying the local Ollama instance.

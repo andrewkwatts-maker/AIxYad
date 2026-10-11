@@ -1,4 +1,4 @@
-# Automatica Adapters
+# AIxYad Adapters
 
 Adapters are named by the **wire protocol** they implement, not by any specific provider.
 This keeps the engine fully vendor-neutral — you bring your own providers via CLI or App.
@@ -21,9 +21,9 @@ This keeps the engine fully vendor-neutral — you bring your own providers via 
 ### Via CLI
 
 ```
-automatica --ListProviders
-automatica --AddProvider "My Provider" --ProviderType <type> --ProviderUrl <url> --ProviderModel <model> --ProviderKeyEnv <ENV_VAR>
-automatica --RemoveProvider "My Provider"
+aixyad --ListProviders
+aixyad --AddProvider "My Provider" --ProviderType <type> --ProviderUrl <url> --ProviderModel <model> --ProviderKeyEnv <ENV_VAR>
+aixyad --RemoveProvider "My Provider"
 ```
 
 ### Via App
@@ -53,7 +53,7 @@ export MY_PROVIDER_API_KEY=your_key_here
 **Step 2 — Register the provider:**
 
 ```
-automatica --AddProvider "My Provider" \
+aixyad --AddProvider "My Provider" \
     --ProviderType http_chat_completions \
     --ProviderUrl   https://api.example.com \
     --ProviderModel model-name-here \
@@ -62,7 +62,7 @@ automatica --AddProvider "My Provider" \
 
 **Example — a provider that uses this format (xAI Grok):**
 ```
-automatica --AddProvider "Grok" \
+aixyad --AddProvider "Grok" \
     --ProviderType http_chat_completions \
     --ProviderUrl   https://api.x.ai \
     --ProviderModel grok-3 \
@@ -71,7 +71,7 @@ automatica --AddProvider "Grok" \
 
 **Example — OpenAI-format API:**
 ```
-automatica --AddProvider "OpenAI" \
+aixyad --AddProvider "OpenAI" \
     --ProviderType http_chat_completions \
     --ProviderUrl   https://api.openai.com \
     --ProviderModel gpt-4o \
@@ -80,7 +80,7 @@ automatica --AddProvider "OpenAI" \
 
 **Example — DeepSeek:**
 ```
-automatica --AddProvider "DeepSeek" \
+aixyad --AddProvider "DeepSeek" \
     --ProviderType http_chat_completions \
     --ProviderUrl   https://api.deepseek.com \
     --ProviderModel deepseek-chat \
@@ -106,7 +106,7 @@ set GENERATE_CONTENT_API_KEY=your_key_here
 **Step 2 — Register the provider:**
 
 ```
-automatica --AddProvider "My GenContent Provider" \
+aixyad --AddProvider "My GenContent Provider" \
     --ProviderType http_generate_content \
     --ProviderUrl   https://generativelanguage.googleapis.com/v1beta/models \
     --ProviderModel model-name-here \
@@ -117,7 +117,7 @@ automatica --AddProvider "My GenContent Provider" \
 ```
 set GEMINI_API_KEY=your_key_here
 
-automatica --AddProvider "Gemini" \
+aixyad --AddProvider "Gemini" \
     --ProviderType http_generate_content \
     --ProviderUrl   https://generativelanguage.googleapis.com/v1beta/models \
     --ProviderModel gemini-2.0-flash \
@@ -136,7 +136,7 @@ No API key required — just a running server on localhost.
 **Step 2 — Register the provider:**
 
 ```
-automatica --AddProvider "Local Model" \
+aixyad --AddProvider "Local Model" \
     --ProviderType http_local_chat \
     --ProviderUrl   http://localhost:11434 \
     --ProviderModel model-name-here
@@ -144,7 +144,7 @@ automatica --AddProvider "Local Model" \
 
 **Example — Ollama (open-source local runner):**
 ```
-automatica --AddProvider "Ollama" \
+aixyad --AddProvider "Ollama" \
     --ProviderType http_local_chat \
     --ProviderUrl   http://localhost:11434 \
     --ProviderModel llama3.2:3b
@@ -165,7 +165,7 @@ The full prompt is passed as the last argument; the binary must print JSON to st
 **Step 2 — Register the provider:**
 
 ```
-automatica --AddProvider "My CLI Tool" \
+aixyad --AddProvider "My CLI Tool" \
     --ProviderType subprocess_cli \
     --ProviderUrl   "" \
     --ProviderModel ""
@@ -176,7 +176,7 @@ via the App (Settings → AI Providers → edit).
 
 **Example — Claude CLI (Anthropic's `claude` command-line tool):**
 ```
-automatica --AddProvider "Claude CLI" \
+aixyad --AddProvider "Claude CLI" \
     --ProviderType subprocess_cli
 ```
 Then in the App, set `executable = claude` and `args = ["--output-format", "json"]`

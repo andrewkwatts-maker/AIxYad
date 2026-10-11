@@ -6,7 +6,7 @@ def test_full_server_workflow(tmp_path):
     """Create project → add task → verify DB state without running the agent."""
     import sys
     sys.path.insert(0, r'H:\Github\Automatica')
-    from automatica_db import init_project_db, create_task, get_tasks
+    from aixyad_db import init_project_db, create_task, get_tasks
 
     # Create a project DB
     proj_dir = tmp_path / 'test_project'
@@ -31,7 +31,7 @@ def test_full_server_workflow(tmp_path):
     assert any(t['display_id'] == task['display_id'] for t in tasks)
 
     # Create sprint and assign
-    from automatica_db import create_sprint
+    from aixyad_db import create_sprint
     sprint = create_sprint(pconn, sprint_number=1, goal='Test sprint')
     assert sprint['id'] > 0
 

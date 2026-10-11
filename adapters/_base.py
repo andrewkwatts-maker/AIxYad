@@ -122,7 +122,7 @@ Core actions:
 - "step_done":  Task complete. Call this ONCE all criteria are met. Params: {"summary": "what was done"}
 - "need_help":  Stuck or blocked. Params: {"reason": "why stuck"}
 
-NEVER reach into .git, .automatica, venv, .vscode, node_modules, __pycache__,
+NEVER reach into .git, .aixyad, venv, .vscode, node_modules, __pycache__,
 or any test cache directory — every path you read or write must be a real
 project source path, and the executor will reject system-directory paths.
 
@@ -826,7 +826,7 @@ class BaseAdapter(ABC):
         # adapter's WF-8 zero-diff classifier does NOT mark the call as a
         # false-success block. Caller may override by passing the flag.
         mock_request = {
-            "protocol": "automatica-agent/1.0",
+            "protocol": "aixyad-agent/1.0",
             "task": {"description": request.get("prompt", "")},
             "context": {},
             "instructions": {"role": "You are a planning assistant. Return only valid JSON."},

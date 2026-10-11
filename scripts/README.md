@@ -1,4 +1,4 @@
-# Automatica Scripts Reference
+# AIxYad Scripts Reference
 
 This directory contains helper scripts that agents and developers can use to perform common operations efficiently.
 

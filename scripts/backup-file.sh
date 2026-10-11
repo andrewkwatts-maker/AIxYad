@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/backup-file.sh ======
+#====== AIxYad/scripts/backup-file.sh ======
 # Creates a backup of a file in the temp directory
 # Usage: ./backup-file.sh <file_path>
 # Returns: Path to backup file

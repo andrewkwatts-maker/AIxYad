@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/assign-agent.sh ======
+#====== AIxYad/scripts/assign-agent.sh ======
 # Analyzes a task and recommends the appropriate agent
 # Usage: ./assign-agent.sh ["task description" | --current]
 

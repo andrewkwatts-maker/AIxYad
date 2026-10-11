@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>AI × יד</title>
+  <!-- Simplified mark for 16-48 px: no lettering, grid or circuits; heavier strokes. -->
+  <defs>
+    <clipPath id="tile"><rect width="1024" height="1024" rx="224"/></clipPath>
+    <clipPath id="globe"><circle cx="512" cy="430" r="300"/></clipPath>
+    <radialGradient id="sphere" cx="0.38" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#FDF1E4"/><stop offset="0.65" stop-color="#F3D6BA"/><stop offset="1" stop-color="#E4B48D"/>
+    </radialGradient>
+    <linearGradient id="hand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#26797D"/><stop offset="1" stop-color="#154E52"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="1024" height="1024" fill="#F7EFE4"/>
+    <circle cx="512" cy="430" r="300" fill="url(#sphere)"/>
+    <g clip-path="url(#globe)" fill="none" stroke-linecap="round">
+      <path d="M270 190 C410 330 614 620 754 730" stroke="#C27A4A" stroke-width="56"/>
+      <path d="M754 190 C614 330 410 620 270 730" stroke="#1F6E72" stroke-width="56"/>
+    </g>
+    <circle cx="512" cy="430" r="300" fill="none" stroke="#1F6E72" stroke-width="44"/>
+    <circle cx="512" cy="472" r="44" fill="#FFFFFF" stroke="#8FE3DA" stroke-width="16"/>
+    <path fill="url(#hand)" d="M150 1024 C230 960 300 900 370 870 C470 830 600 820 700 790
+      C780 765 840 735 880 700 C900 682 892 650 866 656 C800 672 720 700 640 712
+      C560 704 460 706 380 700 C340 700 306 670 292 636 C286 620 262 620 262 640
+      C264 690 282 760 290 800 C250 860 170 940 60 1024 Z"/>
+  </g>
+</svg>

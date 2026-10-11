@@ -1,17 +1,17 @@
-# Automatica — Integrations Guide
+# AIxYad — Integrations Guide
 
-This document covers all external integrations available in Automatica: VCS (Git),
+This document covers all external integrations available in AIxYad: VCS (Git),
 email notifications, Slack, webhooks, GitHub/GitLab, and the unified CLI.
 
 ---
 
 ## 1. VCS Integration (Git)
 
-Automatica can automatically commit and push after each completed task.
+AIxYad can automatically commit and push after each completed task.
 
 ### Configuration
 
-All git settings live in `~/.automatica/settings.json` under the following keys:
+All git settings live in `~/.aixyad/settings.json` under the following keys:
 
 | Key                  | Type   | Default    | Description                              |
 |----------------------|--------|------------|------------------------------------------|
@@ -52,11 +52,11 @@ Each project has a **VCS** tab with:
 
 ## 2. Email Notification Setup
 
-Automatica can send an email after each sprint completes.
+AIxYad can send an email after each sprint completes.
 
 ### Configuration
 
-Add a `notifications` block to `~/.automatica/settings.json`:
+Add a `notifications` block to `~/.aixyad/settings.json`:
 
 ```json
 {
@@ -94,19 +94,19 @@ send_sprint_complete({'sprint_number': 1, 'tasks_completed': 3,
 
 ## 3. Webhook Integration
 
-### Outgoing webhooks (Automatica → external)
+### Outgoing webhooks (AIxYad → external)
 
 Add a `webhook_url` to the `notifications` block:
 
 ```json
 {
   "notifications": {
-    "webhook_url": "https://your-server.com/automatica-hook"
+    "webhook_url": "https://your-server.com/aixyad-hook"
   }
 }
 ```
 
-Automatica will POST JSON to this URL on the following events:
+AIxYad will POST JSON to this URL on the following events:
 
 | Event              | When                        |
 |--------------------|-----------------------------|
@@ -125,9 +125,9 @@ Payload shape:
 }
 ```
 
-### Incoming webhooks (external → Automatica)
+### Incoming webhooks (external → AIxYad)
 
-POST to `POST /api/webhooks/receive` on the running Automatica server:
+POST to `POST /api/webhooks/receive` on the running AIxYad server:
 
 ```bash
 curl -X POST http://localhost:8765/api/webhooks/receive \
@@ -160,7 +160,7 @@ Add `slack_webhook_url` to the `notifications` block:
 ### Setting up the Slack App
 
 1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App**
-2. Choose **From scratch** → name it `Automatica`
+2. Choose **From scratch** → name it `AIxYad`
 3. Under **Incoming Webhooks**, activate and click **Add New Webhook to Workspace**
 4. Copy the webhook URL and paste it into `settings.json`
 
@@ -170,7 +170,7 @@ Add `slack_webhook_url` to the `notifications` block:
 
 ### Auto-commit workflow
 
-With `git_auto_commit: true`, Automatica commits after each successful task with
+With `git_auto_commit: true`, AIxYad commits after each successful task with
 a message like `feat: implement authentication module`.
 
 With `git_auto_push: true`, it immediately pushes to `git_remote`/`git_default_branch`.
@@ -179,7 +179,7 @@ With `git_auto_push: true`, it immediately pushes to `git_remote`/`git_default_b
 
 ```
 main          ← production-ready
-auto/sprint-N ← Automatica creates this with "New Branch" per sprint
+auto/sprint-N ← AIxYad creates this with "New Branch" per sprint
 ```
 
 Set `git_branch_prefix` to `"auto/"` and create a branch per sprint before running.
@@ -189,15 +189,15 @@ Set `git_branch_prefix` to `"auto/"` and create a branch per sprint before runni
 In your `.github/workflows/ci.yml`:
 
 ```yaml
-- name: Notify Automatica
+- name: Notify AIxYad
   if: success()
   run: |
-    curl -X POST ${{ secrets.AUTOMATICA_URL }}/api/webhooks/receive \
+    curl -X POST ${{ secrets.AIXYAD_URL }}/api/webhooks/receive \
       -H "Content-Type: application/json" \
       -d '{"event":"ci_passed","branch":"${{ github.ref_name }}"}'
 ```
 
-Set `AUTOMATICA_URL` in your GitHub repository secrets.
+Set `AIXYAD_URL` in your GitHub repository secrets.
 
 ---
 
@@ -206,7 +206,7 @@ Set `AUTOMATICA_URL` in your GitHub repository secrets.
 The unified CLI lives at `scripts/cli.py` (engine root).
 
 ```bash
-# From Automatica engine root:
+# From AIxYad engine root:
 python scripts/cli.py <command> <action> [options]
 ```
 
@@ -276,7 +276,7 @@ python scripts/cli.py config list
 
 ## OpenAPI / REST API
 
-The Automatica server exposes an OpenAPI spec at:
+The AIxYad server exposes an OpenAPI spec at:
 
 - **Swagger UI**: `http://localhost:8765/docs`
 - **ReDoc**: `http://localhost:8765/redoc`

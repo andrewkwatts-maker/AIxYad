@@ -63,15 +63,15 @@ def test_build_file_wiki_indexes_all_files(tmp_path):
 
 
 def test_build_file_wiki_caches_to_json(tmp_path):
-    """Test that build_file_wiki() writes cache to .automatica/wiki_index.json."""
+    """Test that build_file_wiki() writes cache to .aixyad/wiki_index.json."""
     # Create a test file
     (tmp_path / "test.py").write_text("# GUID:test-001\npass\n", encoding="utf-8")
-    
+
     # Call build_file_wiki (should create cache)
     result = build_file_wiki(tmp_path)
-    
+
     # Assert cache file exists
-    cache_path = tmp_path / ".automatica" / "wiki_index.json"
+    cache_path = tmp_path / ".aixyad" / "wiki_index.json"
     assert cache_path.exists()
     
     # Assert cache content matches result

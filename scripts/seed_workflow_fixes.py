@@ -1,7 +1,12 @@
-"""Queue workflow-improvement tasks into the Automatica project backlog."""
+"""Queue workflow-improvement tasks into the AIxYad project backlog."""
 import sqlite3
 import os
+import sys
+from pathlib import Path
 from datetime import datetime, timezone
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import aixyad_paths
 
 WORKFLOW_FIXES = [
     ("WF-1",
@@ -61,7 +66,7 @@ WORKFLOW_FIXES = [
 
 
 def main():
-    db_path = r"H:\Github\Automatica\.automatica\project.db"
+    db_path = str(aixyad_paths.project_state(Path(r"H:\Github\Automatica")) / "project.db")
     if not os.path.exists(db_path):
         print(f"DB not found: {db_path}")
         return

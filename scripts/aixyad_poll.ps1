@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Automatica autonomous poll loop — runs sprint cycles on a fixed interval
+    AIxYad autonomous poll loop — runs sprint cycles on a fixed interval
     against a single project. run_autonomous.py recovers stuck tasks at startup.
 
 .PARAMETER Project
@@ -9,7 +9,7 @@
 
 .PARAMETER Provider
     AI provider name. Default: Phi4 (local Ollama). Any provider name
-    configured in ~/.automatica/automatica.db works.
+    configured in ~/.aixyad/aixyad.db works.
 
 .PARAMETER IntervalHours
     Hours between cycles. Default: 1.0
@@ -18,9 +18,9 @@
     Max sprint runtime per cycle in minutes. Default: 110
 
 .EXAMPLE
-    .\automatica_poll.ps1
-    .\automatica_poll.ps1 -IntervalHours 0.5 -Provider Phi4
-    .\automatica_poll.ps1 -Project H:\Github\Pong -Provider Phi4 -IntervalHours 0.5
+    .\aixyad_poll.ps1
+    .\aixyad_poll.ps1 -IntervalHours 0.5 -Provider Phi4
+    .\aixyad_poll.ps1 -Project H:\Github\Pong -Provider Phi4 -IntervalHours 0.5
 #>
 [CmdletBinding()]
 param(
@@ -31,8 +31,8 @@ param(
     [string]$ProjectGoal        = ""
 )
 
-$AutomaticaDir = "H:\Github\Automatica"
-$LogFile       = Join-Path $AutomaticaDir "logs\automatica_poll.log"
+$AixyadDir = "H:\Github\Automatica"
+$LogFile       = Join-Path $AixyadDir "logs\aixyad_poll.log"
 $SleepSeconds  = [int]($IntervalHours * 3600)
 
 New-Item -ItemType Directory -Path (Split-Path $LogFile) -Force | Out-Null
@@ -43,17 +43,17 @@ function Write-Log([string]$msg) {
     Add-Content -Path $LogFile -Value $line -Encoding UTF8
 }
 
-$RunScript = Join-Path $AutomaticaDir "run_autonomous.py"
+$RunScript = Join-Path $AixyadDir "run_autonomous.py"
 
 # ── Interactive setup ─────────────────────────────────────────────────────
 # Walk the user through a who/what/when/where/why setup if they launched
 # without enough info — instead of silently looping over an empty backlog.
-$ProjectDbPath = Join-Path $Project ".automatica\project.db"
+$ProjectDbPath = Join-Path $Project ".aixyad\project.db"
 $NeedsSetup = ($ProjectGoal -eq "") -and -not (Test-Path $ProjectDbPath)
 
 if ($NeedsSetup) {
     Write-Host ""
-    Write-Host "==== Automatica setup ====" -ForegroundColor Cyan
+    Write-Host "==== AIxYad setup ====" -ForegroundColor Cyan
     Write-Host "Walking you through 5 quick choices. Press Enter to accept the default in [brackets]."
     Write-Host ""
 
@@ -124,7 +124,7 @@ if ($NeedsSetup) {
         New-Item -ItemType Directory -Path $Project -Force | Out-Null
     }
     if (-not [string]::IsNullOrWhiteSpace($WhyNotes)) {
-        $autoDir = Join-Path $Project ".automatica"
+        $autoDir = Join-Path $Project ".aixyad"
         New-Item -ItemType Directory -Path $autoDir -Force | Out-Null
         $notesFile = Join-Path $autoDir "PROJECT_CONTEXT.md"
         @"
@@ -143,7 +143,7 @@ $WhyNotes
 }
 
 $cycle = 0
-Write-Log "Automatica poll loop started -- project: $Project, provider: $Provider, interval: ${IntervalHours}h"
+Write-Log "AIxYad poll loop started -- project: $Project, provider: $Provider, interval: ${IntervalHours}h"
 
 while ($true) {
     $cycle++
@@ -151,7 +151,7 @@ while ($true) {
 
     # Use & invocation (not Start-Process) — PS 5.1's Start-Process mangles
     # ArgumentList items containing parens, colons, or quoted strings.
-    Push-Location $AutomaticaDir
+    Push-Location $AixyadDir
     try {
         if ($ProjectGoal -ne "") {
             & python $RunScript --Project $Project --provider $Provider `

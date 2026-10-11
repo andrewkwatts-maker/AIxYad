@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/run-tests.sh ======
+#====== AIxYad/scripts/run-tests.sh ======
 # Runs project tests based on settings.json configuration
 # Usage: ./run-tests.sh [--coverage] [--threshold N]
 

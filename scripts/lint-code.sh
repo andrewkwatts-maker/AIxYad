@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/lint-code.sh ======
+#====== AIxYad/scripts/lint-code.sh ======
 # Runs linters and formatters based on project type
 # Usage: ./lint-code.sh [--fix] [--check-only] [path]
 

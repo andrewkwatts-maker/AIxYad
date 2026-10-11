@@ -24,7 +24,7 @@
     Project directory. Default H:\Github\Nova3D
 
 .PARAMETER Provider
-    Automatica provider name. Default Claude-Opus
+    AIxYad provider name. Default Claude-Opus
 
 .PARAMETER MaxMinutesPerCycle
     Per-cycle wall budget. Default 110.
@@ -50,8 +50,8 @@ param(
     [int]   $InterCycleSeconds  = 10
 )
 
-$AutomaticaDir = 'H:\Github\Automatica'
-$LogFile       = Join-Path $AutomaticaDir "logs\nova_poll_lane_$LaneId.log"
+$AixyadDir = 'H:\Github\Automatica'
+$LogFile       = Join-Path $AixyadDir "logs\nova_poll_lane_$LaneId.log"
 
 New-Item -ItemType Directory -Path (Split-Path $LogFile) -Force | Out-Null
 
@@ -81,13 +81,13 @@ while ($true) {
     $proc = Start-Process `
         -FilePath 'python' `
         -ArgumentList @(
-            (Join-Path $AutomaticaDir 'run_autonomous.py'),
+            (Join-Path $AixyadDir 'run_autonomous.py'),
             '--Project', $Project,
             '--provider', $Provider,
             '--max-minutes', $MaxMinutesPerCycle,
             '--max-sprints', 9999
         ) `
-        -WorkingDirectory $AutomaticaDir `
+        -WorkingDirectory $AixyadDir `
         -NoNewWindow -Wait -PassThru
 
     Write-Log "--- Cycle #$cycle end | exit=$($proc.ExitCode) ---"

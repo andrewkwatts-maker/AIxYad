@@ -4,7 +4,7 @@ The Management section lets you manage Projects, Sprints, and Tasks.
 
 **Projects tab:**
 - Register project directories for AI agent work
-- Each project gets its own SQLite database at `.automatica/project.db`
+- Each project gets its own SQLite database at `.aixyad/project.db`
 
 **Sprints tab:**
 - Create sprints with a goal and point capacity

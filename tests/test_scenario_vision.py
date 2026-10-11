@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Automatica — Vision Scenario Tests
+AIxYad — Vision Scenario Tests
 ====================================
 End-to-end scenario tests that validate the full agent action pipeline:
   screenshot → vision analysis → coordinate extraction → UI interaction

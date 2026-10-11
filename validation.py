@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Automatica Action Validation & Transaction Rollback.
+AIxYad Action Validation & Transaction Rollback.
 
 Validates every AI action against the schema before execution.
 Tracks file modifications for rollback on failure.
@@ -330,7 +330,7 @@ def handle_agent_failure(project_db, global_db, task_display_id: str,
 
     Returns {action: 'retry'|'bumped'|'retry_cap_reached'|'exhausted', ...}.
     """
-    from automatica_db import (
+    from aixyad_db import (
         get_task_by_id, bump_complexity, release_task_reservation,
         unlock_file, get_all_locks, log_action, record_provider_attempt,
         increment_task_failure_count, get_task_failure_count,
@@ -360,7 +360,7 @@ def handle_agent_failure(project_db, global_db, task_display_id: str,
         # Network blip / connection reset / rate-limit-cooldown — retry next
         # cycle without consuming a retry slot. Log so we can see frequency.
         try:
-            from automatica_db import log_action
+            from aixyad_db import log_action
             log_action(project_db, 'task',
                        (get_task_by_id(project_db, task_display_id) or {}).get('id'),
                        agent, 'transient_failure_skipped',

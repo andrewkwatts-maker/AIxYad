@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Automatica Agent Protocol Schema",
-  "description": "JSON Schema for validating request and response objects in the Automatica agent protocol.",
+  "title": "AIxYad Agent Protocol Schema",
+  "description": "JSON Schema for validating request and response objects in the AIxYad agent protocol.",
 
   "definitions": {
     "request": {
@@ -10,7 +10,7 @@
       "properties": {
         "protocol": {
           "type": "string",
-          "const": "automatica-agent/1.0",
+          "const": "aixyad-agent/1.0",
           "description": "Protocol identifier and version."
         },
         "session_id": {

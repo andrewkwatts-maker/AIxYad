@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/start-sprint.sh ======
+#====== AIxYad/scripts/start-sprint.sh ======
 # Starts a new sprint with tracking metadata
 # Usage: ./start-sprint.sh -n "Sprint Name" [-g "Sprint Goal"] [-d 14]
 

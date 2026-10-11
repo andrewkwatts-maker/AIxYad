@@ -32,7 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from automatica_db import (
+import aixyad_paths
+from aixyad_db import (
     init_project_db,
     init_global_db,
     create_sprint,
@@ -117,9 +118,9 @@ def _check_rate_limit_sentinel() -> Optional[str]:
     rate-limit window from re-attempting and writing a fresh sentinel just
     after the previous cooldown expires — which produced the 4-hour rate-limit
     period observed earlier in this session."""
-    base = Path(os.environ.get("AUTOMATICA_HOME") or
+    base = Path(aixyad_paths.env("HOME") or
                 Path(__file__).resolve().parent)
-    path = base / ".automatica" / "rate_limited.json"
+    path = aixyad_paths.project_state(base) / "rate_limited.json"
     if not path.exists():
         return None
     try:
@@ -315,7 +316,7 @@ class SprintRunner:
         self.global_db_path = global_db_path
 
         # Each thread gets its own DB connection — store the path, not the conn
-        self._project_db_path = self.project_dir / ".automatica" / "project.db"
+        self._project_db_path = aixyad_paths.project_state(self.project_dir) / "project.db"
 
         # Main-thread connections (for planning/review)
         self._project_conn: Optional[sqlite3.Connection] = None
@@ -693,7 +694,7 @@ class SprintRunner:
             if task_row:
                 _fc = task_row["failure_count"] if "failure_count" in task_row.keys() else 0
                 try:
-                    from automatica_db import MAX_TASK_RETRIES
+                    from aixyad_db import MAX_TASK_RETRIES
                     if _fc >= MAX_TASK_RETRIES:
                         _log(f"[EXEC] Skipping {st['task_display_id']} — retry cap "
                              f"({_fc}/{MAX_TASK_RETRIES} failures)")
@@ -802,7 +803,7 @@ class SprintRunner:
 
         Tasks at retry cap are skipped (already blocked).
         """
-        from automatica_db import get_task_failure_count, MAX_TASK_RETRIES
+        from aixyad_db import get_task_failure_count, MAX_TASK_RETRIES
         _fib = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89]
         bumped = 0
         skipped_cap = 0
@@ -913,7 +914,7 @@ class SprintRunner:
 
         # ── Retry-cap gate: skip if this task already hit the failure limit ──
         try:
-            from automatica_db import (
+            from aixyad_db import (
                 get_task_failure_count, get_retry_backoff_seconds,
                 MAX_TASK_RETRIES,
             )
@@ -1154,7 +1155,7 @@ class SprintRunner:
                 # Record success in provider performance
                 if gconn:
                     try:
-                        from automatica_db import record_provider_attempt, record_usage_log
+                        from aixyad_db import record_provider_attempt, record_usage_log
                         prov = gconn.execute("SELECT id FROM providers WHERE name = ?",
                                               (self.provider,)).fetchone()
                         if prov:
@@ -1178,7 +1179,7 @@ class SprintRunner:
             # Record failure in usage_log for per-agent analytics
             if gconn:
                 try:
-                    from automatica_db import record_usage_log
+                    from aixyad_db import record_usage_log
                     prov = gconn.execute("SELECT id FROM providers WHERE name = ?",
                                           (self.provider,)).fetchone()
                     if prov:
@@ -1257,7 +1258,7 @@ class SprintRunner:
             try:
                 from pathlib import Path as _P
                 import json as _j
-                _cfg_path = _P.home() / '.automatica' / 'settings.json'
+                _cfg_path = aixyad_paths.home() / 'settings.json'
                 _settings_f08 = _j.loads(_cfg_path.read_text()) if _cfg_path.exists() else {}
                 if _settings_f08.get('git_auto_commit', False):
                     _prefix = _settings_f08.get('git_commit_prefix', 'feat: ')
@@ -1274,7 +1275,7 @@ class SprintRunner:
 
         # E-21: record agent execution history in project DB
         try:
-            from automatica_db import record_agent_execution
+            from aixyad_db import record_agent_execution
             _exec_status = 'done' if success else ('blocked' if 'blocked' in task_result.error.lower() else 'failed')
             _agent_slug = sprint_task.get('assigned_agent', '') or ''
             _session_id = getattr(protocol, '_session_id', '') if 'protocol' in dir() else ''
@@ -1459,7 +1460,7 @@ class SprintRunner:
 
         # Persist velocity history in project_settings (rolling last 10)
         try:
-            from automatica_db import get_project_setting_json, set_project_setting_json
+            from aixyad_db import get_project_setting_json, set_project_setting_json
             hist = get_project_setting_json(conn, 'velocity_history') or []
             hist.append({
                 'sprint': sprint_number,
@@ -1504,7 +1505,7 @@ class SprintRunner:
         # — the same counter validation.handle_agent_failure manages, which
         # resets to 0 on success and is the authoritative consecutive-fail
         # count. Threshold lifted to MAX_TASK_RETRIES so the two layers agree.
-        from automatica_db import get_task_failure_count as _get_task_fc
+        from aixyad_db import get_task_failure_count as _get_task_fc
         try:
             from validation import MAX_TASK_RETRIES as _MAX_RETRIES
         except ImportError:
@@ -1613,11 +1614,11 @@ class SprintRunner:
         if not _health_ok:
             _log(f"[SPRINT] Provider health check FAILED — aborting sprint #{sprint_number}")
             try:
-                from automatica_db import log_provider_health as _lph
+                from aixyad_db import log_provider_health as _lph
                 gconn = self._get_main_global_conn()
                 _lph(gconn, self.provider, -1, 'unreachable')
                 # Also log to provider_performance table
-                from automatica_db import record_provider_attempt
+                from aixyad_db import record_provider_attempt
                 prov = gconn.execute("SELECT id FROM providers WHERE name = ?", (self.provider,)).fetchone()
                 if prov:
                     record_provider_attempt(gconn, prov['id'], 1, False, -1)
@@ -1631,11 +1632,11 @@ class SprintRunner:
         else:
             _log(f"[SPRINT] Provider health OK (latency={_latency_ms}ms)")
             try:
-                from automatica_db import log_provider_health as _lph
+                from aixyad_db import log_provider_health as _lph
                 gconn = self._get_main_global_conn()
                 _lph(gconn, self.provider, _latency_ms, 'ok')
                 # Also log to provider_performance table
-                from automatica_db import record_provider_attempt
+                from aixyad_db import record_provider_attempt
                 prov = gconn.execute("SELECT id FROM providers WHERE name = ?", (self.provider,)).fetchone()
                 if prov:
                     record_provider_attempt(gconn, prov['id'], 1, True, _latency_ms)
@@ -2019,7 +2020,7 @@ class SprintRunner:
         # Detect language from project goal so we don't run python checks
         # against a Go project.
         try:
-            from automatica_db import get_project_setting
+            from aixyad_db import get_project_setting
             from run_autonomous import _detect_language
         except Exception:
             return
@@ -2790,7 +2791,7 @@ class SprintRunner:
     def _generate_tasks_from_goal(self, conn) -> int:
         """Ask the AI to generate a task backlog from the project goal stored in settings.
         Returns number of tasks inserted."""
-        from automatica_db import get_project_setting_json, get_project_setting
+        from aixyad_db import get_project_setting_json, get_project_setting
         from ai_adapters import get_adapter
 
         # Hierarchical goal fallback: project_goal → pipeline_config.project_goal → global_goal
@@ -3048,7 +3049,7 @@ class SprintRunner:
         Ollama-only loop terminates the moment its first auto-generated batch
         finishes, which isn't 'continuous through the day'.
         """
-        from automatica_db import get_project_setting_json, get_project_setting
+        from aixyad_db import get_project_setting_json, get_project_setting
 
         # Pull the goal so the LLM has the same orientation as a first-pass
         # generation, plus a project file census so it can ground its
@@ -3374,7 +3375,7 @@ class SprintRunner:
                 # just `print('Hello, world!')` produces a vacuous passing
                 # test that hides the underlying problem (the module is empty).
                 # Use the AST-based stub detector so docstring padding (auto-
-                # generated @automatica-summary blocks) doesn't defeat the
+                # generated @aixyad-summary blocks) doesn't defeat the
                 # filter the way the previous len<200 conjunction did.
                 try:
                     _src_text = (self.project_dir / p).read_text(
@@ -3469,7 +3470,7 @@ class SprintRunner:
         # For audit phases, include comprehensive audit data
         if "audit" in step_name.lower():
             try:
-                from automatica_db import build_sprint_audit_context
+                from aixyad_db import build_sprint_audit_context
                 audit = build_sprint_audit_context(conn, sprint_number)
                 context["audit"] = {
                     'files_modified': audit.get('files_modified', []),
@@ -3722,7 +3723,7 @@ def main():
     settings_path = Path(args.settings) if args.settings else (_pkg_dir / "settings.json")
     settings = load_settings(settings_path)
     # Use global DB for provider config (authoritative); fall back to settings.json
-    _global_db_path = Path.home() / ".automatica" / "automatica.db"
+    _global_db_path = aixyad_paths.global_db_path()
     _gdb_for_cfg = None
     try:
         import sqlite3 as _sq3c
@@ -3737,7 +3738,7 @@ def main():
     # Load pipeline config — prefer project DB, fall back to file
     pipeline_config = {}
     try:
-        from automatica_db import init_project_db as _ipdb, get_project_setting_json
+        from aixyad_db import init_project_db as _ipdb, get_project_setting_json
         _tmp_conn = _ipdb(project_dir)
         db_pipeline = get_project_setting_json(_tmp_conn, "pipeline_config")
         if db_pipeline:

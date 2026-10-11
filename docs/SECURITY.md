@@ -1,8 +1,8 @@
-# Automatica Security Guide
+# AIxYad Security Guide
 
 ## Responsible Disclosure
 
-If you discover a security vulnerability in Automatica, please:
+If you discover a security vulnerability in AIxYad, please:
 
 1. **Do not** open a public GitHub issue.
 2. Email the maintainer directly (see GitHub profile for contact).
@@ -21,18 +21,18 @@ Set these before starting the server or client; they are never written to disk:
 
 | Variable               | Purpose                              |
 |------------------------|--------------------------------------|
-| `AUTOMATICA_API_KEY`   | API key for server authentication    |
-| `AUTOMATICA_SERVER_URL`| Override server URL in client mode   |
-| `AUTOMATICA_SMTP_PASSWORD` | Override SMTP password           |
+| `AIXYAD_API_KEY`   | API key for server authentication (falls back to `AUTOMATICA_API_KEY`) |
+| `AIXYAD_SERVER_URL`| Override server URL in client mode   |
+| `AIXYAD_SMTP_PASSWORD` | Override SMTP password           |
 
 ```bash
 # Example — Linux/macOS
-export AUTOMATICA_API_KEY="my-secret-key"
-automatica --Serve
+export AIXYAD_API_KEY="my-secret-key"
+aixyad --Serve
 
 # Example — Windows PowerShell
-$env:AUTOMATICA_API_KEY = "my-secret-key"
-python -m automatica --Serve
+$env:AIXYAD_API_KEY = "my-secret-key"
+python -m aixyad --Serve
 ```
 
 ### Key Rotation
@@ -58,7 +58,7 @@ API keys and SMTP passwords are stored using XOR obfuscation with a machine-deri
 
 ### HTTPS Setup
 
-To enable HTTPS, set these keys in `~/.automatica/settings.json` (or via the Security tab):
+To enable HTTPS, set these keys in `~/.aixyad/settings.json` (or via the Security tab):
 
 ```json
 {
@@ -92,7 +92,7 @@ By default, the API server only allows requests from `http://localhost` and `htt
 
 The API uses standard HTTP `Authorization: Bearer <token>` headers. Configure:
 
-1. Set `AUTOMATICA_API_KEY` env var or save an API key in Settings.
+1. Set `AIXYAD_API_KEY` env var or save an API key in Settings.
 2. All clients must include: `Authorization: Bearer <your-key>`.
 3. WebSocket connections accept the key via `Authorization: Bearer <token>` header.
 
@@ -129,7 +129,7 @@ On first open per process, each database runs `PRAGMA integrity_check`. A warnin
 
 ### File Permissions
 
-The `~/.automatica/` directory is set to mode `700` (owner-only) on Unix-like systems after creation. On Windows, filesystem ACLs apply instead; `chmod` is silently skipped.
+The `~/.aixyad/` directory is set to mode `700` (owner-only) on Unix-like systems after creation. On Windows, filesystem ACLs apply instead; `chmod` is silently skipped.
 
 ### Audit Log
 
@@ -156,7 +156,7 @@ SELECT timestamp, action, actor, resource, ip_address FROM audit_log ORDER BY ti
 
 | Limitation | Mitigation |
 |---|---|
-| XOR obfuscation is not cryptographic | Use env vars (`AUTOMATICA_API_KEY`) in production |
+| XOR obfuscation is not cryptographic | Use env vars (`AIXYAD_API_KEY`) in production |
 | Rate limiter is in-memory (resets on restart) | Use a reverse proxy (nginx) for persistent rate limiting |
 | Session tokens are in-memory (lost on restart) | Re-authenticate after server restart |
 | No RBAC (all authenticated requests have full access) | Planned for Sprint D |

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-backup_db.py — back up .automatica/project.db to a timestamped copy.
+backup_db.py — back up .aixyad/project.db to a timestamped copy.
 
 Usage:
     python scripts/backup_db.py                        # backs up current dir's project
@@ -15,17 +15,21 @@ import shutil
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import aixyad_paths
 
 MAX_BACKUPS = 10
 
 
 def backup_db(project_dir: Path, keep: int = MAX_BACKUPS) -> int:
-    db_path = project_dir / ".automatica" / "project.db"
+    state_dir = aixyad_paths.project_state(project_dir)
+    db_path = state_dir / "project.db"
     if not db_path.exists():
         print(f"ERROR: No project DB found at {db_path}", file=sys.stderr)
         return 1
 
-    backup_dir = project_dir / ".automatica" / "backups"
+    backup_dir = state_dir / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -48,7 +52,7 @@ def backup_db(project_dir: Path, keep: int = MAX_BACKUPS) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Back up an Automatica project DB")
+    parser = argparse.ArgumentParser(description="Back up an AIxYad project DB")
     parser.add_argument("--project", default=".", help="Project root directory (default: .)")
     parser.add_argument("--keep", type=int, default=MAX_BACKUPS,
                         help=f"Number of backups to keep (default: {MAX_BACKUPS})")

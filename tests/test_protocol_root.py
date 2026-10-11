@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit tests for Automatica Agent Protocol using Ollama llama3.2.
+Unit tests for AIxYad Agent Protocol using Ollama llama3.2.
 
 Run: python -m pytest test_protocol.py -v --timeout=60
 Skip if Ollama not running.
@@ -140,10 +140,10 @@ class TestExecutor:
 
     def test_edit_file(self):
         result = self.executor.execute({"action": "edit_file", "params": {
-            "path": "test.txt", "old_text": "Hello World", "new_text": "Hello Automatica"
+            "path": "test.txt", "old_text": "Hello World", "new_text": "Hello AIxYad"
         }})
         assert result["success"]
-        assert "Hello Automatica" in (self.project / "test.txt").read_text()
+        assert "Hello AIxYad" in (self.project / "test.txt").read_text()
 
     def test_edit_not_found(self):
         result = self.executor.execute({"action": "edit_file", "params": {

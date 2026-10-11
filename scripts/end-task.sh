@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/end-task.sh ======
+#====== AIxYad/scripts/end-task.sh ======
 # Completes the current task, archives it, and optionally commits/pushes
 # Cross-platform replacement for EndTask.bat
 # Usage: ./end-task.sh [--no-commit] [--push]

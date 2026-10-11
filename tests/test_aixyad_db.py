@@ -1,5 +1,5 @@
 """
-pytest unit tests for automatica_db.create_task(), update_task(), subtasks,
+pytest unit tests for aixyad_db.create_task(), update_task(), subtasks,
 handoff_json, and escalation_log.
 """
 import json
@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from automatica_db import (
+from aixyad_db import (
     init_project_db,
     create_task,
     update_task,

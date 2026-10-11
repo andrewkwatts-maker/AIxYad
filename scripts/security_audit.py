@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Security audit script for the Automatica codebase.
+Security audit script for the AIxYad codebase.
 
 C-22: Runs pip-audit and bandit, outputs a combined report.
 
@@ -42,7 +42,7 @@ def main():
     args = parser.parse_args()
 
     lines = []
-    lines.append(f'Automatica Security Audit Report')
+    lines.append(f'AIxYad Security Audit Report')
     lines.append(f'Generated: {datetime.now().isoformat()}')
     lines.append(f'Repo: {_REPO_ROOT}')
     lines.append('')

@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/end-sprint.sh ======
+#====== AIxYad/scripts/end-sprint.sh ======
 # Completes the current sprint, generates report, and sends email
 # Usage: ./end-sprint.sh [--no-email] [--output path]
 

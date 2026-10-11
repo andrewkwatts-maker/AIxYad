@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import aixyad_paths
 from local_ai.profiles import ServerProfile, load_config, load_profiles
 
 
@@ -48,8 +49,11 @@ class JobsSpec:
     qwen_bin: str = "qwen"
     branch_prefix: str = "claude/local-ai/"
     worktree_root: str = "{repo_parent}/{repo_name}.agents"
-    cli_config_root: Path = Path.home() / ".automatica" / "cli"
-    state_dir: Path = Path.home() / ".automatica" / "jobs"
+    # default_factory: resolved per-instance, not once at class-definition
+    # (import) time — merely importing this module must never touch the
+    # real filesystem or trigger the .automatica -> .aixyad migration.
+    cli_config_root: Path = field(default_factory=lambda: aixyad_paths.home() / "cli")
+    state_dir: Path = field(default_factory=lambda: aixyad_paths.home() / "jobs")
     step_timeout_s: float = 3600.0
     max_plan_steps: int = 8
 
@@ -144,13 +148,20 @@ def load_gateway(user_file: Path | None = None) -> GatewaySpec:
         raise ValueError(f"default_route '{default_route}' is not a route")
 
     jobs_raw = raw.get("jobs") or {}
+    # cli_config_root / state_dir default to aixyad_paths.home() sub-paths, resolved
+    # here (not as a class-level default) so loading a gateway spec that overrides
+    # both never has to touch the real home directory.
+    _cli_config_root_raw = jobs_raw.get("cli_config_root")
+    _state_dir_raw = jobs_raw.get("state_dir")
     jobs = JobsSpec(
         claude_bin=jobs_raw.get("claude_bin", JobsSpec.claude_bin),
         qwen_bin=jobs_raw.get("qwen_bin", JobsSpec.qwen_bin),
         branch_prefix=jobs_raw.get("branch_prefix", JobsSpec.branch_prefix),
         worktree_root=jobs_raw.get("worktree_root", JobsSpec.worktree_root),
-        cli_config_root=_expand(jobs_raw.get("cli_config_root", str(JobsSpec.cli_config_root))),
-        state_dir=_expand(jobs_raw.get("state_dir", str(JobsSpec.state_dir))),
+        cli_config_root=_expand(_cli_config_root_raw) if _cli_config_root_raw
+                        else aixyad_paths.home() / "cli",
+        state_dir=_expand(_state_dir_raw) if _state_dir_raw
+                  else aixyad_paths.home() / "jobs",
         step_timeout_s=float(jobs_raw.get("step_timeout_s", JobsSpec.step_timeout_s)),
         max_plan_steps=int(jobs_raw.get("max_plan_steps", JobsSpec.max_plan_steps)),
     )
@@ -158,7 +169,7 @@ def load_gateway(user_file: Path | None = None) -> GatewaySpec:
     swap = raw.get("swap") or {}
     return GatewaySpec(
         listen=_parse_listen(raw.get("listen") or ["127.0.0.1:8770"]),
-        token_file=_expand(raw.get("token_file", "~/.automatica/gateway.token")),
+        token_file=_expand(raw.get("token_file", "~/.aixyad/gateway.token")),
         default_route=default_route, backends=backends, routes=routes, profiles=profiles,
         jobs=jobs, max_hold_s=float(swap.get("max_hold_s", 120)),
         idle_unload_s=float(swap.get("idle_unload_s", 0)),

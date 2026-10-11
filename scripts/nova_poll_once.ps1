@@ -1,8 +1,8 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Single-shot Automatica sprint runner — invoked by the Windows Scheduled Task
-    "Automatica_Nova3D_Poll". After the cycle completes, self-reschedules its
+    Single-shot AIxYad sprint runner — invoked by the Windows Scheduled Task
+    "AIxYad_Nova3D_Poll". After the cycle completes, self-reschedules its
     next run with a delay drawn from a Gaussian (normal) distribution
     parameterised by mean and standard deviation, then clamped to [Min, Max] hours.
 
@@ -41,10 +41,10 @@ param(
     [string]$ConfigFile         = ""
 )
 
-$AutomaticaDir = "H:\Github\Automatica"
-$LogFile       = Join-Path $AutomaticaDir "logs\nova_poll.log"
-$TaskName      = "Automatica_Nova3D_Poll"
-$DefaultConfig = Join-Path $AutomaticaDir "nova_poll_config.json"
+$AixyadDir = "H:\Github\Automatica"
+$LogFile       = Join-Path $AixyadDir "logs\nova_poll.log"
+$TaskName      = "AIxYad_Nova3D_Poll"
+$DefaultConfig = Join-Path $AixyadDir "nova_poll_config.json"
 
 New-Item -ItemType Directory -Path (Split-Path $LogFile) -Force | Out-Null
 
@@ -132,13 +132,13 @@ foreach ($proj in $projectList) {
     $proc = Start-Process `
         -FilePath "python" `
         -ArgumentList @(
-            (Join-Path $AutomaticaDir "run_autonomous.py"),
+            (Join-Path $AixyadDir "run_autonomous.py"),
             "--Project", $proj,
             "--provider", $Provider,
             "--max-minutes", $perProject,
             "--max-sprints", 9999
         ) `
-        -WorkingDirectory $AutomaticaDir `
+        -WorkingDirectory $AixyadDir `
         -NoNewWindow -Wait -PassThru
     Write-Log "--- project $proj done | exit=$($proc.ExitCode) ---"
     $lastExit = $proc.ExitCode

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-#====== Automatica/test_automatica_db.py ======
+#====== AIxYad/test_aixyad_db.py ======
 #!copyright (c) 2025 Andrew Keith Watts. All rights reserved.
 """
-Comprehensive unit tests for automatica_db.py — covering schema v2 helpers,
+Comprehensive unit tests for aixyad_db.py — covering schema v2 helpers,
 config inheritance, manager/project registry, and existing sprint/task functions.
 
-Run:  python -m pytest test_automatica_db.py -v
+Run:  python -m pytest test_aixyad_db.py -v
 """
 
 import json
@@ -15,7 +15,7 @@ import shutil
 import pytest
 from pathlib import Path
 
-import automatica_db as adb
+import aixyad_db as adb
 
 
 # =====================================================================

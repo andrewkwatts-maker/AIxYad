@@ -1,13 +1,13 @@
 """Server profiles: named llama-server launch settings read from YAML.
 
 The packaged ``local_ai.yaml`` holds machine-independent settings. A user file
-(``~/.automatica/local_ai.yaml`` or ``$AUTOMATICA_LOCAL_AI``) supplies the paths
-for this machine and may add or override profiles; it is merged over the packaged one.
+(``~/.aixyad/local_ai.yaml`` or ``$AIXYAD_LOCAL_AI``, falling back to
+``$AUTOMATICA_LOCAL_AI``) supplies the paths for this machine and may add or
+override profiles; it is merged over the packaged one.
 """
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -15,8 +15,19 @@ from typing import Any
 
 import yaml
 
+import aixyad_paths
+
 PACKAGED_CONFIG = Path(__file__).with_name("local_ai.yaml")
-USER_CONFIG = Path.home() / ".automatica" / "local_ai.yaml"
+
+
+def _user_config_path() -> Path:
+    """Default location of the user's machine-specific config file.
+
+    Resolved lazily (not at import time) so merely importing this module
+    never touches the real filesystem or triggers the ``.automatica`` ->
+    ``.aixyad`` migration as a side effect.
+    """
+    return aixyad_paths.home() / "local_ai.yaml"
 
 
 _VAR = re.compile(r"\{(\w+)\}")
@@ -93,7 +104,7 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 def load_config(user_file: Path | None = None) -> dict[str, Any]:
     """Return the packaged config with the user's file merged over it."""
     config = _read_yaml(PACKAGED_CONFIG)
-    user_path = user_file or Path(os.environ.get("AUTOMATICA_LOCAL_AI", USER_CONFIG))
+    user_path = user_file or Path(aixyad_paths.env("LOCAL_AI", _user_config_path()))
     if user_path.is_file():
         config = _deep_merge(config, _read_yaml(user_path))
     return config
@@ -123,7 +134,7 @@ def load_profiles(user_file: Path | None = None) -> dict[str, ServerProfile]:
     for name in raw_profiles:
         spec = {**defaults, **resolve(name)}
         if not spec.get("model"):
-            raise ValueError(f"profile '{name}' has no model path; set it in {USER_CONFIG}")
+            raise ValueError(f"profile '{name}' has no model path; set it in {_user_config_path()}")
         profiles[name] = ServerProfile(
             name=name,
             binary=str(spec.get("binary", "llama-server")),

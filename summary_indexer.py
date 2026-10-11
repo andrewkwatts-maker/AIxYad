@@ -47,13 +47,13 @@ log = logging.getLogger(__name__)
 # indexer "this is *our* comment, safe to replace next refresh"; absence means
 # the existing docstring was hand-written and we leave it alone (or upgrade
 # it conservatively only if it's clearly stale).
-SENTINEL_BEGIN = "<!-- automatica:summary -->"
-SENTINEL_END   = "<!-- /automatica:summary -->"
-SUMMARY_MAGIC  = "@automatica-summary"
+SENTINEL_BEGIN = "<!-- aixyad:summary -->"
+SENTINEL_END   = "<!-- /aixyad:summary -->"
+SUMMARY_MAGIC  = "@aixyad-summary"
 
 # Files we never summarise — too noisy or actively dangerous to touch.
 SKIP_PATTERNS = (
-    "__pycache__", ".git", ".automatica", ".claude", ".venv", "venv", "env",
+    "__pycache__", ".git", ".aixyad", ".automatica", ".claude", ".venv", "venv", "env",
     "node_modules", "build", "dist", "site-packages", "logs",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
 )
@@ -493,7 +493,7 @@ FOLDER_SUMMARY_NAME = "_folder_summary.md"
 
 def _python_summary_blurb(path: Path) -> str:
     """Pull just the body of our auto-generated module docstring (without
-    the @automatica-summary tail metadata)."""
+    the @aixyad-summary tail metadata)."""
     try:
         tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
     except Exception:
@@ -756,4 +756,4 @@ class SummaryIndexer:
         return self.drain(force=force)
 
 
-__doc__ += "\n\n@automatica-summary"  # mark our own module as auto-aware
+__doc__ += "\n\n@aixyad-summary"  # mark our own module as auto-aware

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Automatica Agent Executor — Sandboxed action execution for external AI agents.
+AIxYad Agent Executor — Sandboxed action execution for external AI agents.
 
 Executes file operations, searches, and commands within a permission sandbox.
 Every action is checked against permissions before execution.
@@ -18,6 +18,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import aixyad_paths
 
 
 # OS-level file mutex (cross-process, cross-thread) to add a hard layer on
@@ -186,7 +188,7 @@ class AgentExecutor:
         "copy_file":              "can_write_file",
         "discard_file":           "can_write_file",  # soft delete to _Discarded/
         "restore_file":           "can_write_file",
-        "take_note":              "can_write_file",  # writes to .automatica/notes/
+        "take_note":              "can_write_file",  # writes to .aixyad/notes/
         # DB mutation actions (write)
         "update_task": "can_write_file",
         "add_task": "can_write_file",
@@ -445,7 +447,7 @@ class AgentExecutor:
         # Log file write/edit actions to DB if handler is available
         if self._db_handler and result.get("success") and action in ("write_file", "edit_file"):
             try:
-                from automatica_db import log_action as _log_action
+                from aixyad_db import log_action as _log_action
                 rel_path = params.get("path", "")
                 mod_action = "file_create" if action == "write_file" else "file_edit"
                 _log_action(
@@ -502,7 +504,7 @@ class AgentExecutor:
         # Record file read hash for freshness checking
         if self._db_handler and hasattr(self._db_handler, 'pdb') and self._db_handler.pdb:
             try:
-                from automatica_db import record_file_read
+                from aixyad_db import record_file_read
                 record_file_read(self._db_handler.pdb, rel_path,
                                   self._session_id, project_dir=self.project_dir)
             except Exception:
@@ -554,7 +556,7 @@ class AgentExecutor:
         "assets", "data", "fixtures", "resources", "static", "templates",
         # Build / output (we don't write here but the agent may try)
         "build", "dist", "out", "target",
-        # Automatica-specific
+        # AIxYad-specific
         "_Discarded",
         # Common per-language directories
         "cmd", "pkg",                   # Go
@@ -1000,7 +1002,7 @@ class AgentExecutor:
         # Check file lock — if locked by another agent, deny edit
         if self._db_handler and hasattr(self._db_handler, 'pdb') and self._db_handler.pdb:
             try:
-                from automatica_db import check_file_lock, check_file_freshness
+                from aixyad_db import check_file_lock, check_file_freshness
                 lock = check_file_lock(self._db_handler.pdb, rel_path)
                 if lock and lock['locked_by'] != self._session_actor:
                     return {"success": False,
@@ -1064,7 +1066,7 @@ class AgentExecutor:
         # Record as a "read" so freshness checks pass on subsequent edits in this session
         if self._db_handler and hasattr(self._db_handler, 'pdb') and self._db_handler.pdb:
             try:
-                from automatica_db import record_file_read
+                from aixyad_db import record_file_read
                 record_file_read(self._db_handler.pdb, rel_path,
                                  self._session_id, project_dir=self.project_dir)
             except Exception:
@@ -1089,7 +1091,7 @@ class AgentExecutor:
     def _do_copy_file(self, params: dict) -> dict:
         """Copy a file inside the project. Both src and dst are validated by
         _check_path so neither can escape project_dir or land inside a
-        forbidden system directory (.git, .automatica, venv, etc.)."""
+        forbidden system directory (.git, .aixyad, venv, etc.)."""
         src = params.get("src", "") or params.get("source", "")
         dst = params.get("dst", "") or params.get("dest", "") or params.get("destination", "")
         if not src or not dst:
@@ -1371,7 +1373,7 @@ class AgentExecutor:
     def _do_take_note(self, params: dict) -> dict:
         """Append a note to the agent's persistent task scratchpad.
 
-        Notes are stored at ``.automatica/notes/<task_id>.md`` (private,
+        Notes are stored at ``.aixyad/notes/<task_id>.md`` (private,
         gitignored, never executed) and auto-injected into the prompt for
         every iteration of the same task. Use this when:
           * you've made a non-obvious decision you'll forget
@@ -1402,7 +1404,7 @@ class AgentExecutor:
         import re as _re
         safe_id = _re.sub(r"[^A-Za-z0-9_.-]", "_", str(task_id))[:80] or "shared"
 
-        notes_dir = self.project_dir / ".automatica" / "notes"
+        notes_dir = aixyad_paths.project_state(self.project_dir) / "notes"
         try:
             notes_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -1526,7 +1528,7 @@ class AgentExecutor:
         for fp in self.project_dir.rglob("*"):
             if not fp.is_file():
                 continue
-            if any(p in fp.parts for p in ("__pycache__", ".automatica", ".git", "node_modules")):
+            if any(p in fp.parts for p in ("__pycache__", ".aixyad", ".automatica", ".git", "node_modules")):
                 continue
             if fp.suffix.lower() not in ('.py', '.js', '.ts', '.tsx', '.cpp', '.hpp',
                                           '.h', '.c', '.go', '.rs', '.java'):
@@ -2238,7 +2240,7 @@ class AgentExecutor:
         if not (self._db_handler and hasattr(self._db_handler, 'pdb') and self._db_handler.pdb):
             return {"success": False, "message": "ACTION: get_config — ERROR: no DB connection"}
         try:
-            from automatica_db import get_project_setting
+            from aixyad_db import get_project_setting
             value = get_project_setting(self._db_handler.pdb, key, "")
             if not value:
                 return {"success": True, "message": f"ACTION: get_config '{key}' — NOT SET (empty)"}
@@ -2259,7 +2261,7 @@ class AgentExecutor:
         if not (self._db_handler and hasattr(self._db_handler, 'pdb') and self._db_handler.pdb):
             return {"success": False, "message": "ACTION: set_config — ERROR: no DB connection"}
         try:
-            from automatica_db import set_project_setting
+            from aixyad_db import set_project_setting
             set_project_setting(self._db_handler.pdb, key, str(value))
             return {"success": True, "message": f"ACTION: set_config '{key}' — SAVED ({len(str(value))} chars)"}
         except Exception as exc:
@@ -2268,7 +2270,7 @@ class AgentExecutor:
     def _do_get_agent_def(self, params: dict) -> dict:
         """Read an agent definition by slug.
         Checks project_settings first (key='agent_def_{slug}'), then falls back
-        to the agents/ directory in the Automatica install.
+        to the agents/ directory in the AIxYad install.
         Params: {"agent_slug": "developer"}
         """
         slug = params.get("agent_slug", "").lower().strip()
@@ -2277,7 +2279,7 @@ class AgentExecutor:
         # Try project DB first
         if self._db_handler and hasattr(self._db_handler, 'pdb') and self._db_handler.pdb:
             try:
-                from automatica_db import get_project_setting
+                from aixyad_db import get_project_setting
                 stored = get_project_setting(self._db_handler.pdb, f"agent_def_{slug}", "")
                 if stored:
                     preview = stored[:3000] + ("…[truncated]" if len(stored) > 3000 else "")
@@ -2325,7 +2327,7 @@ class AgentExecutor:
         }
 
         try:
-            from automatica_db import update_task
+            from aixyad_db import update_task
             success = update_task(self._db_handler.pdb, task_id, handoff_json=json.dumps(handoff_data))
             if not success:
                 return {"success": False, "message": f"ACTION: store_handoff — ERROR: failed to update task {task_id}"}
@@ -2336,12 +2338,13 @@ class AgentExecutor:
     # Path components that are ALWAYS off-limits to the agent regardless of
     # permissions. These are system/tool dirs that an agent has no legitimate
     # reason to write into — touching them silently corrupts state (eg.
-    # .git index) or breaks Automatica's own bookkeeping (.automatica DB).
+    # .git index) or breaks AIxYad's own bookkeeping (.aixyad DB).
     # Read-only access is also blocked because the agent shouldn't be
     # treating these as data sources either.
     HARD_FORBIDDEN_PATH_PARTS = frozenset({
         ".git",
-        ".automatica",   # per-project Automatica state (DB, locks, sentinels)
+        ".aixyad",       # per-project AIxYad state (DB, locks, sentinels)
+        ".automatica",   # old name — still blocked until a project migrates
         ".venv", "venv", "env", "virtualenv",  # Python virtual envs
         "node_modules",
         "__pycache__",
@@ -2357,7 +2360,7 @@ class AgentExecutor:
 
         ``HARD_FORBIDDEN_PATH_PARTS`` is non-overridable — even with
         ``allowed_paths`` set the agent cannot reach into ``.git`` /
-        ``.automatica`` / ``venv`` / etc. Those are tool/state directories
+        ``.aixyad`` / ``venv`` / etc. Those are tool/state directories
         and any 'edit' there is almost certainly a corruption."""
         try:
             resolved = (self.project_dir / path).resolve()
@@ -2377,7 +2380,7 @@ class AgentExecutor:
                     "safe": False,
                     "reason": (f"path traverses forbidden system directory "
                                f"'{part}/' — agent cannot read or write "
-                               f"inside .git, .automatica, venv, node_modules, "
+                               f"inside .git, .aixyad, venv, node_modules, "
                                f"__pycache__, IDE folders, or test caches"),
                 }
 

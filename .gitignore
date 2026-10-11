@@ -20,6 +20,9 @@ test_saves/
 test_saves_validation/
 
 # Runtime databases — never commit
+aixyad.db
+aixyad.db-shm
+aixyad.db-wal
 automatica.db
 automatica.db-shm
 automatica.db-wal
@@ -61,4 +64,5 @@ secrets/*.secret.json
 # OS
 .DS_Store
 Thumbs.db
+.aixyad/
 .automatica/

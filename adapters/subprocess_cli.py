@@ -47,6 +47,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import aixyad_paths
 from ._base import BaseAdapter, SYSTEM_PROMPT, _error_response
 
 
@@ -84,9 +85,9 @@ def _detect_rate_limit(stdout: str) -> str | None:
 
 
 def _rate_limit_sentinel_path() -> Path:
-    base = Path(os.environ.get("AUTOMATICA_HOME") or
+    base = Path(aixyad_paths.env("HOME") or
                 Path(__file__).resolve().parents[1])
-    d = base / ".automatica"
+    d = aixyad_paths.project_state(base)
     d.mkdir(parents=True, exist_ok=True)
     return d / "rate_limited.json"
 
@@ -225,7 +226,7 @@ _BLOCKED_PHRASES = [
 
 def _failure_log_path() -> Path:
     """Where per-failure full stderr/stdout dumps live."""
-    base = Path(os.environ.get("AUTOMATICA_HOME") or
+    base = Path(aixyad_paths.env("HOME") or
                 Path(__file__).resolve().parents[1])
     d = base / "logs" / "cli_failures"
     d.mkdir(parents=True, exist_ok=True)
@@ -389,7 +390,7 @@ def _run_with_watchdog(cmd, prompt, timeout, cwd,
 # scratch state (.claude/, logs/autoclaude/) bumps `git status` enough that
 # the diff-changed check passes and WF-8 is bypassed.
 _BOOKKEEPING_PREFIXES = (
-    ".automatica/", ".claude/", ".idea/", ".vscode/",
+    ".aixyad/", ".claude/", ".idea/", ".vscode/",
     "logs/autoclaude/", "logs/cli_failures/", "logs/sprints/",
     "Testing/", "build/", "build_new/", "build_taa/", "build_sdf/",
     "build_gfx7/", "build_server/", "build_terrain/", "build_particles/",
@@ -427,7 +428,7 @@ def _git_diff_summary(cwd: str | None) -> tuple[bool, str]:
     1500+ lines of pre-existing dirt that meant most real edits looked
     like no-ops.
 
-    Bookkeeping paths (build outputs, .claude/.automatica/.vscode, autoclaude
+    Bookkeeping paths (build outputs, .claude/.aixyad/.vscode, autoclaude
     scratch logs) are stripped so Claude can't fake task completion by leaving
     behind tool-state files in those directories.
 
@@ -536,7 +537,7 @@ def _extract_referenced_paths(*texts: str) -> list[str]:
 def _verify_referenced_files_exist(paths: list[str], cwd: str | None) -> tuple[bool, list[str], list[str]]:
     """For each path in *paths*, check existence ONLY against *cwd*-relative
     or absolute resolutions. Never falls back to Path.cwd() — that would let
-    files from a sibling project (e.g. Automatica/engine/foo) accidentally
+    files from a sibling project (e.g. AIxYad/engine/foo) accidentally
     match a Nova3D-relative reference like 'engine/foo'.
 
     Returns (all_exist, exists_list, missing_list).

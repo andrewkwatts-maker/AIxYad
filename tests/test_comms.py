@@ -96,7 +96,7 @@ class TestStatusHealth:
     def test_health_200_when_db_ok(self):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = (1,)
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             r = _build_app()
             from fastapi.testclient import TestClient
             assert TestClient(r).get('/api/health').status_code == 200
@@ -104,14 +104,14 @@ class TestStatusHealth:
     def test_health_fields(self):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = (1,)
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             body = TestClient(_build_app()).get('/api/health').json()
         for f in ('status', 'version', 'python', 'platform', 'db', 'uptime_s'):
             assert f in body
 
     def test_health_degraded_when_db_error(self):
-        with patch('automatica_db.init_global_db', side_effect=Exception('boom')):
+        with patch('aixyad_db.init_global_db', side_effect=Exception('boom')):
             from fastapi.testclient import TestClient
             body = TestClient(_build_app()).get('/api/health').json()
         assert body['status'] == 'degraded'
@@ -175,14 +175,14 @@ class TestAuth:
         body = r.json()
         assert 'token' in body
         assert 'pair_url' in body
-        assert 'automatica://pair' in body['pair_url']
+        assert 'aixyad://pair' in body['pair_url']
 
     def test_pair_valid_token(self, tc):
         # Step 1: generate a pending token via /api/auth/qr
         token = tc.get('/api/auth/qr').json()['token']
         # Step 2: claim it
         conn = MagicMock()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             r = tc.post('/api/auth/pair', json={
                 'token': token,
                 'device_id': 'test-device-001',
@@ -205,7 +205,7 @@ class TestAuth:
         """A pairing token can only be claimed once."""
         token = tc.get('/api/auth/qr').json()['token']
         conn = MagicMock()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             tc.post('/api/auth/pair', json={'token': token, 'device_id': 'dev1'})
             r2 = tc.post('/api/auth/pair', json={'token': token, 'device_id': 'dev2'})
         assert r2.status_code == 403
@@ -213,23 +213,23 @@ class TestAuth:
     def test_list_devices_returns_list(self, tc):
         conn = MagicMock()
         conn.execute.return_value.fetchall.return_value = []
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             r = tc.get('/api/auth/devices')
         assert r.status_code == 200
         assert isinstance(r.json(), list)
 
     def test_revoke_device_returns_revoked(self, tc):
         conn = MagicMock()
-        with patch('automatica_db.init_global_db', return_value=conn), \
-             patch('automatica_db.revoke_device', return_value=True), \
-             patch('automatica_db.log_auth_event'):
+        with patch('aixyad_db.init_global_db', return_value=conn), \
+             patch('aixyad_db.revoke_device', return_value=True), \
+             patch('aixyad_db.log_auth_event'):
             r = tc.delete('/api/auth/devices/device-abc')
         assert r.status_code == 200
 
     def test_audit_log_returns_list(self, tc):
         conn = MagicMock()
         conn.execute.return_value.fetchall.return_value = []
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             r = tc.get('/api/auth/audit')
         assert r.status_code == 200
         assert isinstance(r.json(), list)
@@ -237,7 +237,7 @@ class TestAuth:
     def test_audit_log_respects_limit(self, tc):
         conn = MagicMock()
         conn.execute.return_value.fetchall.return_value = []
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             r = tc.get('/api/auth/audit?limit=5')
         assert r.status_code == 200
 
@@ -249,7 +249,7 @@ class TestProjects:
     def test_list_projects_200(self):
         conn = MagicMock()
         conn.execute.return_value.fetchall.return_value = []
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).get('/api/projects')
         assert r.status_code == 200
@@ -260,7 +260,7 @@ class TestProjects:
             {'id': 1, 'name': 'Alpha', 'directory': '/tmp/a', 'created_at': '2026-01-01'},
             {'id': 2, 'name': 'Beta',  'directory': '/tmp/b', 'created_at': '2026-01-02'},
         ]
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             data = TestClient(_build_app()).get('/api/projects').json()
         assert len(data) == 2
@@ -269,20 +269,20 @@ class TestProjects:
     def test_tasks_404_for_unknown_project(self):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = None
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).get('/api/projects/9999/tasks')
         assert r.status_code == 404
 
     def test_tasks_returns_list(self, tmp_path):
-        import automatica_db as adb
+        import aixyad_db as adb
         pdb = adb.init_project_db(tmp_path)
         adb.create_task(pdb, title='Alpha Task')
         pdb.close()
 
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             data = TestClient(_build_app()).get('/api/projects/1/tasks').json()
         assert len(data) == 1
@@ -291,7 +291,7 @@ class TestProjects:
     def test_create_task_returns_task_id(self, tmp_path):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/projects/1/tasks', json={'title': 'New'})
         assert r.status_code == 200
@@ -302,7 +302,7 @@ class TestProjects:
     def test_create_task_404_unknown_project(self):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = None
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/projects/9999/tasks', json={'title': 'X'})
         assert r.status_code == 404
@@ -313,7 +313,7 @@ class TestProjects:
 class TestTasks:
 
     def test_update_task_success(self, tmp_path):
-        import automatica_db as adb
+        import aixyad_db as adb
         pdb = adb.init_project_db(tmp_path)
         task = adb.create_task(pdb, title='Old')
         pdb.close()
@@ -322,7 +322,7 @@ class TestTasks:
         conn.execute.return_value.fetchall.return_value = [
             {'id': 1, 'directory': str(tmp_path)},
         ]
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).patch(f"/api/tasks/{task['id']}", json={'title': 'New'})
         assert r.status_code == 200
@@ -331,13 +331,13 @@ class TestTasks:
     def test_update_task_404_unknown(self):
         conn = MagicMock()
         conn.execute.return_value.fetchall.return_value = []
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).patch('/api/tasks/9999', json={'title': 'X'})
         assert r.status_code == 404
 
     def test_delete_task_success(self, tmp_path):
-        import automatica_db as adb
+        import aixyad_db as adb
         pdb = adb.init_project_db(tmp_path)
         task = adb.create_task(pdb, title='To Delete')
         pdb.close()
@@ -346,7 +346,7 @@ class TestTasks:
         conn.execute.return_value.fetchall.return_value = [
             {'id': 1, 'directory': str(tmp_path)},
         ]
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).delete(f"/api/tasks/{task['id']}")
         assert r.status_code == 200
@@ -355,7 +355,7 @@ class TestTasks:
     def test_delete_task_404_unknown(self):
         conn = MagicMock()
         conn.execute.return_value.fetchall.return_value = []
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).delete('/api/tasks/9999')
         assert r.status_code == 404
@@ -411,9 +411,9 @@ class TestSprints:
     def test_list_sprints_with_project(self, tmp_path):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
-        import automatica_db as adb
+        import aixyad_db as adb
         adb.init_project_db(tmp_path).close()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).get('/api/sprints?project_id=1')
         assert r.status_code == 200
@@ -422,7 +422,7 @@ class TestSprints:
     def test_list_sprints_404_unknown_project(self):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = None
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).get('/api/sprints?project_id=9999')
         assert r.status_code == 404
@@ -430,9 +430,9 @@ class TestSprints:
     def test_create_sprint_success(self, tmp_path):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
-        import automatica_db as adb
+        import aixyad_db as adb
         adb.init_project_db(tmp_path).close()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/sprints', json={
                 'project_id': 1, 'goal': 'Ship MVP', 'max_points': 50,
@@ -443,7 +443,7 @@ class TestSprints:
     def test_create_sprint_404_unknown_project(self):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = None
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/sprints', json={'project_id': 9999, 'goal': ''})
         assert r.status_code == 404
@@ -454,7 +454,7 @@ class TestSprints:
     def test_start_sprint_unknown_project_returns_404(self):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = None
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/sprints/start', json={'project_id': 99})
         assert r.status_code == 404
@@ -464,7 +464,7 @@ class TestSprints:
         conn.execute.return_value.fetchone.return_value = {
             'directory': str(tmp_path), 'name': 'TestProject',
         }
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/sprints/start', json={
                 'project_id': 1, 'dry_run': True,
@@ -481,7 +481,7 @@ class TestSprints:
             'directory': str(tmp_path), 'name': 'Proj',
         }
         runner = MagicMock()
-        with patch('automatica_db.init_global_db', return_value=conn), \
+        with patch('aixyad_db.init_global_db', return_value=conn), \
              patch('sprint_runner.SprintRunner', return_value=runner):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/sprints/start', json={'project_id': 1})
@@ -504,7 +504,7 @@ class TestSprints:
     def test_commit_trigger_unknown_project_returns_404(self):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = None
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/triggers/commit', json={'project_id': 99})
         assert r.status_code == 404
@@ -514,7 +514,7 @@ class TestSprints:
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
         # No triggers.json → trigger treated as disabled
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/triggers/commit', json={'project_id': 1})
         assert r.status_code == 200
@@ -528,7 +528,7 @@ class TestAgents:
     def test_list_agents_200(self):
         conn = MagicMock()
         conn.execute.return_value.fetchall.return_value = []
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).get('/api/agents')
         assert r.status_code == 200
@@ -536,7 +536,7 @@ class TestAgents:
 
     def test_create_agent_success(self):
         conn = MagicMock()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/agents', json={
                 'slug': 'my-agent',
@@ -560,7 +560,7 @@ class TestAgents:
 
     def test_delete_agent_success(self):
         conn = MagicMock()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).delete('/api/agents/developer')
         assert r.status_code == 200
@@ -568,14 +568,14 @@ class TestAgents:
 
     def test_run_agent_missing_task_id_returns_400(self):
         conn = MagicMock()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/agents/developer/run', json={'project_id': 1})
         assert r.status_code == 400
 
     def test_run_agent_success(self):
         conn = MagicMock()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/agents/developer/run', json={
                 'task_display_id': 'TASK-001',
@@ -594,13 +594,13 @@ class TestProviders:
     def test_list_providers_200(self):
         conn = MagicMock()
         conn.execute.return_value.fetchall.return_value = []
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             assert TestClient(_build_app()).get('/api/providers').status_code == 200
 
     def test_add_provider_missing_name_returns_400(self):
         conn = MagicMock()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/providers', json={'provider_type': 'api'})
         assert r.status_code == 400
@@ -609,8 +609,8 @@ class TestProviders:
         conn = MagicMock()
         adb_mock = MagicMock()
         adb_mock.add_provider.return_value = {'id': 1, 'name': 'Ollama'}
-        with patch('automatica_db.init_global_db', return_value=conn), \
-             patch('automatica_db.add_provider', return_value={'id': 1, 'name': 'Ollama'}):
+        with patch('aixyad_db.init_global_db', return_value=conn), \
+             patch('aixyad_db.add_provider', return_value={'id': 1, 'name': 'Ollama'}):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).post('/api/providers', json={
                 'name': 'Ollama', 'provider_type': 'http_local_chat',
@@ -620,7 +620,7 @@ class TestProviders:
 
     def test_update_provider_success(self):
         conn = MagicMock()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).patch('/api/providers/1', json={'name': 'NewName', 'enabled': 0})
         assert r.status_code == 200
@@ -628,7 +628,7 @@ class TestProviders:
 
     def test_delete_provider_success(self):
         conn = MagicMock()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).delete('/api/providers/1')
         assert r.status_code == 200
@@ -800,7 +800,7 @@ class TestLogs:
     def test_logs_no_project_returns_empty_when_no_projects(self, tc):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = None
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).get('/api/logs')
         assert r.status_code == 200
@@ -809,9 +809,9 @@ class TestLogs:
     def test_logs_with_project_id(self, tmp_path):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
-        import automatica_db as adb
+        import aixyad_db as adb
         adb.init_project_db(tmp_path).close()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).get('/api/logs?project_id=1')
         assert r.status_code == 200
@@ -820,7 +820,7 @@ class TestLogs:
     def test_logs_unknown_project_returns_404(self):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = None
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).get('/api/logs?project_id=9999')
         assert r.status_code == 404
@@ -828,9 +828,9 @@ class TestLogs:
     def test_logs_limit_param(self, tmp_path):
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
-        import automatica_db as adb
+        import aixyad_db as adb
         adb.init_project_db(tmp_path).close()
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             from fastapi.testclient import TestClient
             r = TestClient(_build_app()).get('/api/logs?limit=5&project_id=1')
         assert r.status_code == 200
@@ -936,10 +936,10 @@ class TestWebSocket:
     def test_ws_logs_connect_and_send(self, app):
         """Client can send a message; server echoes errors or stays alive."""
         from fastapi.testclient import TestClient
-        import automatica_db as adb
+        import aixyad_db as adb
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = None
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             tc_ws = TestClient(app, raise_server_exceptions=False)
             try:
                 with tc_ws.websocket_connect('/ws/logs') as ws:
@@ -952,7 +952,7 @@ class TestWebSocket:
         from fastapi.testclient import TestClient
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = None
-        with patch('automatica_db.init_global_db', return_value=conn):
+        with patch('aixyad_db.init_global_db', return_value=conn):
             tc_ws = TestClient(app, raise_server_exceptions=False)
             try:
                 with tc_ws.websocket_connect('/ws/status') as ws:
@@ -1511,25 +1511,25 @@ class TestDatabaseFailures:
 
     def test_projects_500_on_db_error(self):
         from fastapi.testclient import TestClient
-        with patch('automatica_db.init_global_db', return_value=self._broken_conn()):
+        with patch('aixyad_db.init_global_db', return_value=self._broken_conn()):
             r = TestClient(_build_app()).get('/api/projects')
         assert r.status_code == 500
 
     def test_logs_500_on_db_error(self):
         from fastapi.testclient import TestClient
-        with patch('automatica_db.init_global_db', return_value=self._broken_conn()):
+        with patch('aixyad_db.init_global_db', return_value=self._broken_conn()):
             r = TestClient(_build_app()).get('/api/logs')
         assert r.status_code == 500
 
     def test_providers_500_on_db_error(self):
         from fastapi.testclient import TestClient
-        with patch('automatica_db.init_global_db', return_value=self._broken_conn()):
+        with patch('aixyad_db.init_global_db', return_value=self._broken_conn()):
             r = TestClient(_build_app()).get('/api/providers')
         assert r.status_code == 500
 
     def test_agents_500_on_db_error(self):
         from fastapi.testclient import TestClient
-        with patch('automatica_db.init_global_db', return_value=self._broken_conn()):
+        with patch('aixyad_db.init_global_db', return_value=self._broken_conn()):
             r = TestClient(_build_app()).get('/api/agents')
         assert r.status_code == 500
 
@@ -1656,19 +1656,19 @@ class TestCrossProjectTasks:
 
     def test_patch_nonexistent_task_returns_404(self):
         from fastapi.testclient import TestClient
-        with patch('automatica_db.init_global_db', return_value=self._empty_conn()):
+        with patch('aixyad_db.init_global_db', return_value=self._empty_conn()):
             r = TestClient(_build_app()).patch('/api/tasks/99999', json={'status': 'done'})
         assert r.status_code == 404
 
     def test_delete_nonexistent_task_returns_404(self):
         from fastapi.testclient import TestClient
-        with patch('automatica_db.init_global_db', return_value=self._empty_conn()):
+        with patch('aixyad_db.init_global_db', return_value=self._empty_conn()):
             r = TestClient(_build_app()).delete('/api/tasks/99999')
         assert r.status_code == 404
 
     def test_get_tasks_for_nonexistent_project_returns_404(self):
         from fastapi.testclient import TestClient
-        with patch('automatica_db.init_global_db', return_value=self._empty_conn()):
+        with patch('aixyad_db.init_global_db', return_value=self._empty_conn()):
             r = TestClient(_build_app()).get('/api/projects/99999/tasks')
         assert r.status_code == 404
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive integration tests for Automatica agent protocol.
+Comprehensive integration tests for AIxYad agent protocol.
 Tests ALL 27 actions using Ollama llama3.2 against a real project structure.
 
 Setup: Creates a temp project with files, initializes both DBs, seeds tasks/subtasks/sprints.
@@ -18,7 +18,7 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
-from automatica_db import (
+from aixyad_db import (
     init_global_db, init_project_db,
     seed_default_providers, seed_default_pipeline,
     create_task, create_project_task, create_sprint,
@@ -54,7 +54,7 @@ skip_no_ollama = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def project_env():
     """Create a complete test project with files, DBs, tasks, subtasks, sprint."""
-    tmp = Path(tempfile.mkdtemp(prefix="automatica_test_"))
+    tmp = Path(tempfile.mkdtemp(prefix="aixyad_test_"))
 
     # Create project files
     (tmp / "src").mkdir()
@@ -78,7 +78,7 @@ def project_env():
     )
 
     # Init DBs
-    gdb = init_global_db(tmp / ".automatica" / "global.db")
+    gdb = init_global_db(tmp / ".aixyad" / "global.db")
     seed_default_providers(gdb)
     pdb = init_project_db(tmp)
     seed_default_pipeline(pdb)

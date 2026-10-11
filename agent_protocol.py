@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Automatica Agent Protocol — Orchestrates the request/response loop with external AI agents.
+AIxYad Agent Protocol — Orchestrates the request/response loop with external AI agents.
 
 Usage:
     # As a library
@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
+
+import aixyad_paths
 
 
 def _format_criteria_bullets(criteria) -> str:
@@ -124,7 +126,7 @@ AVAILABLE_ACTIONS = [
     {"name": "copy_file", "description": (
         "Copy a file inside the project. Both src and dst are validated — "
         "neither may escape the project or land in a forbidden system "
-        "directory (.git, .automatica, venv, etc.)."),
+        "directory (.git, .aixyad, venv, etc.)."),
      "params": {"src": "string (relative source path)",
                  "dst": "string (relative destination path)",
                  "overwrite": "bool (optional, default false)"}},
@@ -142,7 +144,7 @@ AVAILABLE_ACTIONS = [
                  "original_path": "string (optional)"}},
     {"name": "take_note", "description": (
         "Write to your persistent task scratchpad. The notepad lives at "
-        ".automatica/notes/<task_id>.md and is auto-included in every "
+        ".aixyad/notes/<task_id>.md and is auto-included in every "
         "iteration's prompt for this task — use it to remember decisions, "
         "remaining work, and non-obvious findings so you don't re-derive "
         "them next iteration."),
@@ -166,7 +168,7 @@ AVAILABLE_ACTIONS = [
     {"name": "list_windows", "description": "List visible OS windows (title + handle) — use this to find the app you launched",
      "params": {}},
     {"name": "screenshot", "description": "Capture the whole screen to a PNG and return its path",
-     "params": {"path": "string (optional output filename, defaults under .automatica/screenshots/)"}},
+     "params": {"path": "string (optional output filename, defaults under .aixyad/screenshots/)"}},
     {"name": "screenshot_window", "description": "Capture a specific window by title (substring match) to a PNG",
      "params": {"window_title": "string"}},
     {"name": "analyze_screenshot", "description": (
@@ -185,7 +187,7 @@ AVAILABLE_ACTIONS = [
 # ---------------------------------------------------------------------------
 
 class AgentProtocol:
-    """Manages the request/response loop between Automatica and external AI agents."""
+    """Manages the request/response loop between AIxYad and external AI agents."""
 
     def __init__(self, provider: str, provider_config: dict, project_dir: Path,
                  max_iterations: int = 50, log_dir: Optional[Path] = None,
@@ -236,7 +238,7 @@ class AgentProtocol:
             self.summary_indexer = None  # type: ignore[assignment]
 
         # CRITICAL: pin the adapter's subprocess cwd to the project directory.
-        # Without this the Claude CLI subprocess inherits Automatica's own cwd
+        # Without this the Claude CLI subprocess inherits AIxYad's own cwd
         # and edits files in the wrong repository — every "file already exists"
         # / "file does not exist" claim from Claude was decided against the
         # WRONG working tree. Always force the agent to operate inside
@@ -283,9 +285,9 @@ class AgentProtocol:
         # executor can enforce a per-language extension allowlist.
         _project_language = ""
         try:
-            from automatica_db import get_project_setting
+            from aixyad_db import get_project_setting
             import sqlite3 as _sqlite3
-            _pdb_path = (self.project_dir / ".automatica" / "project.db")
+            _pdb_path = (aixyad_paths.project_state(self.project_dir) / "project.db")
             if _pdb_path.is_file():
                 _conn = _sqlite3.connect(str(_pdb_path))
                 _conn.row_factory = _sqlite3.Row
@@ -339,7 +341,7 @@ class AgentProtocol:
         trimmed_history = [_trim_history_entry(e) for e in self.history[-(max_history * 2):]]
 
         request = {
-            'protocol': 'automatica-agent/1.0',
+            'protocol': 'aixyad-agent/1.0',
             'session_id': self.session_id,
             'sequence': sequence,
             'task': task,
@@ -353,7 +355,7 @@ class AgentProtocol:
         # Enrich with DB-backed context if available
         if self.db_handler and task.get('display_id'):
             try:
-                from automatica_db import build_task_context
+                from aixyad_db import build_task_context
                 db_context = build_task_context(self.db_handler.pdb, task['display_id'])
                 if db_context and 'error' not in db_context:
                     request['task_context'] = db_context
@@ -404,10 +406,10 @@ class AgentProtocol:
             pass  # standards block is best-effort
 
         # Pull setup-wizard "WHY" notes (PROJECT_CONTEXT.md) — captured by
-        # automatica_poll.ps1 during interactive setup. Surfaces user-supplied
+        # aixyad_poll.ps1 during interactive setup. Surfaces user-supplied
         # constraints / audience / motivation that don't belong in CLAUDE.md.
         try:
-            _ctx_path = self.project_dir / ".automatica" / "PROJECT_CONTEXT.md"
+            _ctx_path = aixyad_paths.project_state(self.project_dir) / "PROJECT_CONTEXT.md"
             if _ctx_path.is_file():
                 _ctx_text = _ctx_path.read_text(encoding="utf-8",
                                                   errors="replace")[:1500]
@@ -430,7 +432,7 @@ class AgentProtocol:
             pass  # wiki summary is best-effort
 
         # Auto-inject the agent's persistent notepad for this task. Notes are
-        # written by the take_note action to .automatica/notes/<task_id>.md
+        # written by the take_note action to .aixyad/notes/<task_id>.md
         # and read here on every iteration so the agent doesn't lose the
         # plot when bouncing between iterations or sprints on the same task.
         # First iteration of a task gets a SEED note so the agent sees the
@@ -441,7 +443,7 @@ class AgentProtocol:
             _tid = task.get('display_id') or ''
             if _tid:
                 _safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(_tid))[:80]
-                _notes_dir = self.project_dir / ".automatica" / "notes"
+                _notes_dir = aixyad_paths.project_state(self.project_dir) / "notes"
                 _notes_path = _notes_dir / f"{_safe_id}.md"
                 if not _notes_path.is_file():
                     # Seed on first iteration so the agent has a pattern to
@@ -826,7 +828,7 @@ class AgentProtocol:
                     if (self.db_handler and hasattr(self.db_handler, 'pdb')
                             and self.db_handler.pdb):
                         try:
-                            from automatica_db import log_escalation
+                            from aixyad_db import log_escalation
                             log_escalation(
                                 self.db_handler.pdb,
                                 task.get('display_id', ''),
@@ -2038,7 +2040,7 @@ def load_instructions(config: dict, step: int, agent_role: str,
 
 def load_settings(project_dir: Path) -> dict:
     """Load project settings.json if it exists."""
-    settings_file = project_dir / '.automatica' / 'settings.json'
+    settings_file = aixyad_paths.project_state(project_dir) / 'settings.json'
     if settings_file.exists():
         try:
             return json.loads(settings_file.read_text(encoding='utf-8'))
@@ -2079,7 +2081,7 @@ def get_provider_config(global_db, provider_name: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description='Automatica Agent Protocol — run a single agent task')
+    parser = argparse.ArgumentParser(description='AIxYad Agent Protocol — run a single agent task')
     parser.add_argument('--provider', required=True, help='Provider name (Ollama, Claude, etc.)')
     parser.add_argument('--project-dir', required=True, help='Project directory')
     parser.add_argument('--task-file', required=True, help='Task description markdown file')

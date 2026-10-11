@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#====== Automatica/ui_automation.py ======
+#====== AIxYad/ui_automation.py ======
 #!copyright (c) 2025 Andrew Keith Watts. All rights reserved.
 """
 Low-level Windows UI automation: screenshots, window management, mouse/keyboard input.

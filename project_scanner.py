@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Automatica Project Scanner — Live file structure and symbol queries.
+AIxYad Project Scanner — Live file structure and symbol queries.
 
 All queries run against actual files on disk (not cached DB data).
 The DB is only used for historical snapshots and caching scan results.
@@ -18,6 +18,8 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
+
+import aixyad_paths
 from typing import Dict, List, Optional
 
 
@@ -45,7 +47,7 @@ LANGUAGE_MAP = {
 # Directories to skip when walking
 SKIP_DIRS = frozenset({
     '.git', '.svn', '.hg', 'node_modules', '__pycache__', '.vs', '.vscode',
-    'build', 'build_new', 'dist', 'out', 'target', '.automatica', '.idea',
+    'build', 'build_new', 'dist', 'out', 'target', '.aixyad', '.automatica', '.idea',
     'Debug', 'Release', 'x64', 'x86', '.cache', 'CMakeFiles',
     'vcpkg_installed', 'packages', 'bin', 'obj',
     # Python virtual envs — when an agent provisions its own venv inside a
@@ -414,7 +416,7 @@ def build_file_wiki(project_dir: Path, cache_path: Path = None) -> dict:
     Args:
         project_dir: Root directory of the project to scan
         cache_path: Optional custom cache file path. Defaults to 
-                   project_dir / '.automatica' / 'wiki_index.json'
+                   project_dir / '.aixyad' / 'wiki_index.json'
     
     Returns:
         {
@@ -438,7 +440,7 @@ def build_file_wiki(project_dir: Path, cache_path: Path = None) -> dict:
     
     # Determine cache path
     if cache_path is None:
-        cache_path = project_dir / '.automatica' / 'wiki_index.json'
+        cache_path = aixyad_paths.project_state(project_dir) / 'wiki_index.json'
     else:
         cache_path = Path(cache_path)
     
@@ -800,7 +802,7 @@ def build_file_wiki(project_dir: Path, cache_path: Path = None) -> dict:
     Scans every file, collecting path, size, line_count, language, last_modified,
     and any GUID markers (``# GUID:`` / ``// GUID:`` patterns).
 
-    Results are cached to ``.automatica/wiki_index.json``; the cache is skipped
+    Results are cached to ``.aixyad/wiki_index.json``; the cache is skipped
     when any source file is newer than the cache file itself.
 
     Returns::
@@ -814,7 +816,7 @@ def build_file_wiki(project_dir: Path, cache_path: Path = None) -> dict:
         }
     """
     project_dir = Path(project_dir).resolve()
-    _cache = cache_path or (project_dir / ".automatica" / "wiki_index.json")
+    _cache = cache_path or (aixyad_paths.project_state(project_dir) / "wiki_index.json")
 
     # Check cache freshness: valid if cache exists and no source file is newer
     if _cache.exists():
@@ -1222,7 +1224,7 @@ def find_guid_section(project_dir, guid, db_conn=None):
     record = None
     if db_conn:
         try:
-            from automatica_db import get_code_section, update_section_location, clear_section_location
+            from aixyad_db import get_code_section, update_section_location, clear_section_location
             record = get_code_section(db_conn, guid)
         except ImportError:
             pass
@@ -1333,7 +1335,7 @@ def _extract_section(file_path, lines, start_idx, guid):
 def _walk_text_files(project_dir):
     """Yield relative paths of text files, skipping binaries and build dirs."""
     from pathlib import Path
-    skip = {'.git', '.svn', 'node_modules', '__pycache__', '.vs', 'build', 'dist', '_Discarded', '.automatica'}
+    skip = {'.git', '.svn', 'node_modules', '__pycache__', '.vs', 'build', 'dist', '_Discarded', '.aixyad', '.automatica'}
     binary = {'.exe', '.dll', '.o', '.obj', '.lib', '.pdb', '.png', '.jpg', '.gif', '.zip', '.tar', '.gz', '.db'}
     for p in Path(project_dir).rglob('*'):
         if any(s in p.parts for s in skip):

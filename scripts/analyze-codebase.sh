@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/analyze-codebase.sh ======
+#====== AIxYad/scripts/analyze-codebase.sh ======
 # Analyzes codebase structure, size, and composition
 # Usage: ./analyze-codebase.sh [--json] [--full]
 

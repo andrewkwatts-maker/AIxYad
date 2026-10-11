@@ -1,7 +1,7 @@
 # Development requirements for H:\Github\Automatica (core CLI package)
-# For pip install, use: pip install automatica[full]
+# For pip install, use: pip install aixyad[full]
 
-# Server mode (automatica --Serve)
+# Server mode (aixyad --Serve)
 fastapi>=0.110.0
 uvicorn[standard]>=0.28.0
 python-jose[cryptography]>=3.3.0

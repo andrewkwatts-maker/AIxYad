@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/validate-task.sh ======
+#====== AIxYad/scripts/validate-task.sh ======
 # Validates if the current task meets its Definition of Done
 # Usage: ./validate-task.sh [--strict]
 

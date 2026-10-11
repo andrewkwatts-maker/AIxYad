@@ -15,7 +15,7 @@ The default routing configuration is:
 
 ## How It Works
 
-1. When a task is assigned to an agent, Automatica looks up the task's complexity level (Fibonacci scale: 1, 2, 3, 5, 8, 13, 21, 34, 55, 89)
+1. When a task is assigned to an agent, AIxYad looks up the task's complexity level (Fibonacci scale: 1, 2, 3, 5, 8, 13, 21, 34, 55, 89)
 
 2. The system queries the `complexity_routing` table to find a matching provider:
    - First checks for project-specific routing rules
@@ -47,7 +47,7 @@ python scripts/setup_routing.py --project myproject
 Use the Python API:
 
 ```python
-from automatica_db import init_global_db, setup_complexity_routing_by_name
+from aixyad_db import init_global_db, setup_complexity_routing_by_name
 
 conn = init_global_db()
 
@@ -119,10 +119,10 @@ Ensure providers are configured before setting up routing:
 
 ```bash
 # Check available providers
-sqlite3 automatica.db "SELECT id, name, model_name, enabled FROM providers;"
+sqlite3 aixyad.db "SELECT id, name, model_name, enabled FROM providers;"
 
 # Add a provider if missing
-# (Use the Automatica UI or CLI)
+# (Use the AIxYad UI or CLI)
 ```
 
 ## Testing

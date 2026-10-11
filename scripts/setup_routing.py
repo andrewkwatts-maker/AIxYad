@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Setup complexity-based provider routing for Automatica.
+Setup complexity-based provider routing for AIxYad.
 
 Usage:
     python scripts/setup_routing.py
@@ -13,7 +13,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from automatica_db import init_global_db, setup_complexity_routing_by_name
+from aixyad_db import init_global_db, setup_complexity_routing_by_name
 
 
 def main():

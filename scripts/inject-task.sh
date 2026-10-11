@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/inject-task.sh ======
+#====== AIxYad/scripts/inject-task.sh ======
 # Injects a new task into TODO.md in standardized format
 # Usage: ./inject-task.sh [options]
 #   -t, --title      Task title (required)
@@ -144,7 +144,7 @@ TASK_BLOCK="$TASK_BLOCK
 
 # Create TODO.md if it doesn't exist
 if [ ! -f "$TODO_FILE" ]; then
-    echo "# Automatica Task Backlog" > "$TODO_FILE"
+    echo "# AIxYad Task Backlog" > "$TODO_FILE"
     echo "" >> "$TODO_FILE"
 fi
 

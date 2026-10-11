@@ -88,9 +88,9 @@ class TestAgentFallback:
         """Adding a fallback_slug to agent_definitions should survive a round-trip."""
         conn = sqlite3.connect(':memory:')
         conn.row_factory = sqlite3.Row
-        from automatica_db import init_global_db
+        from aixyad_db import init_global_db
         # Use the in-memory connection to run schema creation
-        from automatica_db import GLOBAL_SCHEMA
+        from aixyad_db import GLOBAL_SCHEMA
         conn.executescript(GLOBAL_SCHEMA)
         conn.commit()
         # Add fallback_slug column if missing (migration guard)
@@ -123,11 +123,11 @@ class TestAgentExecutionHistory:
         """record_agent_execution should insert a row and it should be queryable."""
         conn = sqlite3.connect(':memory:')
         conn.row_factory = sqlite3.Row
-        from automatica_db import PROJECT_SCHEMA
+        from aixyad_db import PROJECT_SCHEMA
         conn.executescript(PROJECT_SCHEMA)
         conn.commit()
 
-        from automatica_db import record_agent_execution
+        from aixyad_db import record_agent_execution
         row_id = record_agent_execution(
             conn,
             agent_slug='developer',
@@ -156,10 +156,10 @@ class TestAgentExecutionHistory:
         """get_agent_stats returns zero-values when no history exists."""
         conn = sqlite3.connect(':memory:')
         conn.row_factory = sqlite3.Row
-        from automatica_db import PROJECT_SCHEMA
+        from aixyad_db import PROJECT_SCHEMA
         conn.executescript(PROJECT_SCHEMA)
         conn.commit()
-        from automatica_db import get_agent_stats
+        from aixyad_db import get_agent_stats
         stats = get_agent_stats(conn, 'nonexistent')
         assert stats['runs'] == 0
         assert stats['success_rate'] == 0.0
@@ -169,10 +169,10 @@ class TestAgentExecutionHistory:
         """get_agent_stats computes correct success_rate from history."""
         conn = sqlite3.connect(':memory:')
         conn.row_factory = sqlite3.Row
-        from automatica_db import PROJECT_SCHEMA
+        from aixyad_db import PROJECT_SCHEMA
         conn.executescript(PROJECT_SCHEMA)
         conn.commit()
-        from automatica_db import record_agent_execution, get_agent_stats
+        from aixyad_db import record_agent_execution, get_agent_stats
         record_agent_execution(conn, 'qa', 'T-001', 's1', 'done', 5.0, 100, 1)
         record_agent_execution(conn, 'qa', 'T-002', 's2', 'done', 6.0, 200, 2)
         record_agent_execution(conn, 'qa', 'T-003', 's3', 'failed', 3.0, 50, 0)
@@ -186,10 +186,10 @@ class TestAgentExecutionHistory:
         """get_all_agent_stats returns rows for each agent slug."""
         conn = sqlite3.connect(':memory:')
         conn.row_factory = sqlite3.Row
-        from automatica_db import PROJECT_SCHEMA
+        from aixyad_db import PROJECT_SCHEMA
         conn.executescript(PROJECT_SCHEMA)
         conn.commit()
-        from automatica_db import record_agent_execution, get_all_agent_stats
+        from aixyad_db import record_agent_execution, get_all_agent_stats
         record_agent_execution(conn, 'dev', 'T-1', 's1', 'done', 10.0, 500, 2)
         record_agent_execution(conn, 'tester', 'T-2', 's2', 'failed', 4.0, 100, 0)
         all_stats = get_all_agent_stats(conn)

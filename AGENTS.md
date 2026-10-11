@@ -1,6 +1,6 @@
-# Automatica Agent Roles
+# AIxYad Agent Roles
 
-This document describes every agent role shipped with Automatica. Agent definitions
+This document describes every agent role shipped with AIxYad. Agent definitions
 live in `agents/<slug>.md` as plain markdown — edit or replace them without changing
 any code.
 
@@ -120,7 +120,7 @@ invoke a builtin, run a shell command, or call a named agent role. See
 
 ### Provider Routing Configuration (Complexity Tiers)
 
-Automatica routes tasks to different AI providers based on task complexity.
+AIxYad routes tasks to different AI providers based on task complexity.
 Routing is stored in the `complexity_routing` table in the global DB.
 
 **Default tiers** (configured automatically by `SprintRunner._route_provider_by_complexity`):
@@ -157,7 +157,7 @@ Every time an agent completes a task, a row is written to
 
 **To query metrics:**
 ```python
-from automatica_db import get_agent_stats, get_all_agent_stats
+from aixyad_db import get_agent_stats, get_all_agent_stats
 stats = get_agent_stats(conn, 'developer')
 # {'slug': 'developer', 'runs': 12, 'success_rate': 83.3,
 #  'avg_duration': 45.2, 'total_tokens': 18400, 'last_run': '2026-04-09 ...' }
@@ -168,7 +168,7 @@ showing these metrics. The "Metrics" top-level tab shows a table of all agents.
 
 ### Fallback Chain Configuration
 
-If an agent fails a task (returns `failed` or `blocked` status), Automatica can
+If an agent fails a task (returns `failed` or `blocked` status), AIxYad can
 automatically retry with a different agent.
 
 **Set via agent definition DB column `fallback_slug`:**

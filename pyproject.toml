@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "automatica"
+name = "aixyad"
 version = "0.2.0"
-description = "Multi-agent AI software development framework — autonomous sprint runner, agent protocol, headless server"
+description = "AI x Yad — multi-agent AI software development framework — autonomous sprint runner, agent protocol, headless server"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -31,12 +31,12 @@ classifiers = [
 server = ["fastapi>=0.110", "uvicorn[standard]>=0.28", "python-jose[cryptography]", "cryptography"]
 vision = ["pillow>=10.0"]
 local-ai = ["pyyaml>=6.0"]
-full   = ["automatica[server,vision,local-ai]"]
+full   = ["aixyad[server,vision,local-ai]"]
 
 [project.scripts]
-automatica = "run_autonomous:main"
-automatica-gateway = "local_ai.gateway:main"
-automatica-bench = "local_ai.bench:main"
+aixyad = "run_autonomous:main"
+aixyad-gateway = "local_ai.gateway:main"
+aixyad-bench = "local_ai.bench:main"
 
 [tool.setuptools]
 py-modules = [
@@ -44,7 +44,8 @@ py-modules = [
     "sprint_runner",
     "agent_protocol",
     "agent_executor",
-    "automatica_db",
+    "aixyad_db",
+    "aixyad_paths",
     "ai_adapters",
     "db_actions",
     "validation",
@@ -66,4 +67,4 @@ include = ["adapters", "adapters.*", "local_ai"]
     "standards/*.md",
 ]
 "adapters" = ["*.py", "README.md"]
-"local_ai" = ["local_ai.yaml", "API.md", "web/index.html"]
+"local_ai" = ["local_ai.yaml", "API.md", "web/index.html", "web/favicon.svg"]

@@ -1,6 +1,6 @@
 # local_ai configuration: llama-server launch profiles and the gateway.
 #
-# Machine-specific paths (binary, model) live in ~/.automatica/local_ai.yaml, which is
+# Machine-specific paths (binary, model) live in ~/.aixyad/local_ai.yaml, which is
 # merged over this file and may add profiles of its own. A profile's `args` are appended
 # to its `extends` parent's, and llama-server keeps the last value of a repeated flag,
 # so a child only lists what it changes.
@@ -95,7 +95,7 @@ profiles:
 # field; machine-specific backends (a second PC, more models) go in the user file.
 gateway:
   listen: ["127.0.0.1:8770"]       # add this PC's Tailscale address to reach it from a phone
-  token_file: ~/.automatica/gateway.token
+  token_file: ~/.aixyad/gateway.token
   default_route: planner
   queue_timeout_s: 1800
   swap:

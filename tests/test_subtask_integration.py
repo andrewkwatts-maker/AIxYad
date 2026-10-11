@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from automatica_db import init_project_db, create_task, create_subtask, complete_subtask
+from aixyad_db import init_project_db, create_task, create_subtask, complete_subtask
 
 
 def _make_pconn(tmp_path):

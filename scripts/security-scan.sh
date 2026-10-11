@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/security-scan.sh ======
+#====== AIxYad/scripts/security-scan.sh ======
 # Runs security scans on the codebase
 # Usage: ./security-scan.sh [--full] [--deps-only]
 

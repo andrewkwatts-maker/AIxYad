@@ -36,7 +36,7 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 ENGINE_DIR  = _SCRIPT_DIR.parent
 UI_DIR      = ENGINE_DIR.parent / "Automatica-App"
-BACKUP_DIR  = ENGINE_DIR.parent / "Automatica-Backups"
+BACKUP_DIR  = ENGINE_DIR.parent / "AIxYad-Backups"
 TODO_FILE   = ENGINE_DIR / "POLISH_TODO.md"
 LOG_DIR     = ENGINE_DIR / "logs"
 
@@ -101,7 +101,7 @@ def _load_env():
 
 def _make_filtered_archive(output_path: str, source_dir: Path) -> None:
     """Create a zip archive of source_dir, skipping .git and build artefacts."""
-    SKIP = {'.git', '__pycache__', '.pytest_cache', 'automatica.egg-info', 'backups'}
+    SKIP = {'.git', '__pycache__', '.pytest_cache', 'aixyad.egg-info', 'automatica.egg-info', 'backups'}
     with zipfile.ZipFile(output_path + '.zip', 'w', zipfile.ZIP_DEFLATED) as zf:
         for p in source_dir.rglob('*'):
             if any(part in SKIP for part in p.parts):
@@ -113,7 +113,7 @@ def _make_filtered_archive(output_path: str, source_dir: Path) -> None:
 def backup_repos() -> None:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    for name, path in [("Automatica", ENGINE_DIR), ("Automatica-App", UI_DIR)]:
+    for name, path in [("AIxYad", ENGINE_DIR), ("Automatica-App", UI_DIR)]:
         if not path.exists():
             continue
         out_stem = BACKUP_DIR / f"{name}_{ts}"
@@ -316,7 +316,7 @@ def execute_tool(name: str, inputs: dict, repo: Path) -> str:
             pattern = inputs.get("pattern") or "**/*.py"
             matches = sorted(base.rglob(pattern.lstrip("**/")))
             rel = [str(m.relative_to(repo)).replace("\\", "/") for m in matches
-                   if m.is_file() and ".automatica" not in m.parts
+                   if m.is_file() and ".aixyad" not in m.parts and ".automatica" not in m.parts
                    and "__pycache__" not in m.parts]
             if not rel:
                 return "(no files matched)"
@@ -363,7 +363,7 @@ def _gather_relevant_files(repo: Path, desc: str) -> dict[str, str]:
     """Read files mentioned by name in the task description."""
     _known = re.compile(
         r'\b(sprint_runner|run_autonomous|agent_protocol|agent_executor|'
-        r'automatica_db|project_scanner|validation|db_actions|view_actions|'
+        r'aixyad_db|project_scanner|validation|db_actions|view_actions|'
         r'api_server|app|workspace|nav_rail|nav_data|tab_bar|soft_card|'
         r'section_list|settings|management|overview|logs|agents|standards|'
         r'pipeline|project_detail|setup_wizard|projects|'
@@ -414,7 +414,7 @@ def run_task_with_claude(item: dict) -> tuple[bool, str]:
             parts.append(f"=== {path} ===\n{content}\n=== end {path} ===")
         files_section = "\n\nRELEVANT SOURCE FILES:\n" + "\n\n".join(parts)
 
-    prompt = f"""You are implementing a code improvement task on the Automatica project.
+    prompt = f"""You are implementing a code improvement task on the AIxYad project.
 
 REPO ROOT: {repo}
 
@@ -590,7 +590,7 @@ def main():
     global MODEL
     _load_env()
 
-    parser = argparse.ArgumentParser(description="Claude-powered Automatica polish daemon")
+    parser = argparse.ArgumentParser(description="Claude-powered AIxYad polish daemon")
     parser.add_argument("--interval", type=int, default=INTERVAL_MIN,
                         help=f"Minutes between cycles (default: {INTERVAL_MIN})")
     parser.add_argument("--once",   action="store_true", help="Run one cycle then exit")

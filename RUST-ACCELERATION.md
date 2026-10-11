@@ -1,17 +1,17 @@
 # Rust acceleration
 
 **Status:** pure Python today. Rust acceleration is required eventually: a Rust core
-(`rust/automatica_core`) with a thin PyO3/maturin wrapper, the pattern the PlayTow
+(`rust/aixyad_core`) with a thin PyO3/maturin wrapper, the pattern the PlayTow
 modules (Arithma, Themelios) use. There is no silent fallback. A missing extension
 raises, and `run_autonomous.main` and `api_server` call `assert_rust_backend()` at startup.
-Most of Automatica waits on model providers, builds or SQLite. The hot paths read the
+Most of AIxYad waits on model providers, builds or SQLite. The hot paths read the
 *target* project's source tree, so their cost grows with that tree.
 
 ## Evidence (2026-10-02, Python 3.13, Windows 11)
 
 Under `cProfile`, the test suite (492 tests, live-Ollama ones deselected) took 180 s:
 150 s waiting in `urlopen` inside `AgentProtocol.execute_loop`, 15 s in `time.sleep`,
-under 2 s in Automatica's own CPU code, because the test projects are tiny. A synthetic
+under 2 s in AIxYad's own CPU code, because the test projects are tiny. A synthetic
 target (601 source files, one 44k-line `.cpp`, 2,000 files in `node_modules`) shows real cost:
 
 | Call | Time |
@@ -45,7 +45,7 @@ target (601 source files, one 44k-line `.cpp`, 2,000 files in `node_modules`) sh
 **Not worth moving.** Provider calls (`adapters/http_*`, `subprocess_cli`,
 `ollama_utils`, `summary_indexer._ollama_summarise`, `planning_quality_gate`) are
 network-bound. `api_server.py` is FastAPI and WebSocket glue, and `sprint_runner.py`
-and `run_autonomous.py` orchestrate and wait on builds. SQLite (`automatica_db.py`,
+and `run_autonomous.py` orchestrate and wait on builds. SQLite (`aixyad_db.py`,
 `db_actions.py`), Pillow and OS calls (`vision_actions.py`, `ui_automation.py`), `re` in
 `log_filter._scrub` and `hashlib` are already C. Code built on CPython's `ast` stays in
 Python (`summary_indexer._content_hash`, `agent_executor._smart_merge_python`,
@@ -61,28 +61,28 @@ Python (`summary_indexer._content_hash`, `agent_executor._smart_merge_python`,
 - **EyeCore**: not for now. `score_text` is tiered (prefix, contains, fuzzy) while
   `_do_find_relevant_files` counts terms, so reuse would change rankings, and
   `sha256_hex` replaces `hashlib`, which is not the slow part of `_content_hash`.
-- **Exetazo, Metron, Rhoe, Arithma, Topos, Epipedon**: no fit. Automatica logs to SQLite
+- **Exetazo, Metron, Rhoe, Arithma, Topos, Epipedon**: no fit. AIxYad logs to SQLite
   rather than parsing logs, and has no metrics layer, binding, maths, spatial index or 2D.
 
-Depend on them with their `python` feature off, so only `automatica_core` links PyO3
+Depend on them with their `python` feature off, so only `aixyad_core` links PyO3
 (Themelios and Ergon pin pyo3 0.22, EyeCore 0.28).
 
 ## Layout
 
 ```
 Cargo.toml                    workspace root; [profile.release] lto, codegen-units = 1
-rust/automatica_core/
+rust/aixyad_core/
   Cargo.toml                  cdylib + rlib; features: default = [], python = ["dep:pyo3"],
                               extension-module = ["python", "pyo3/extension-module"]
-  pyproject.toml              maturin; module-name automatica_core._automatica_core,
+  pyproject.toml              maturin; module-name aixyad_core._aixyad_core,
                               features ["extension-module"], python-source "python"
   src/lib.rs                  plain Rust API: lines.rs, symbols.rs, walk.rs, search.rs
   src/py.rs                   #[cfg(feature = "python")] bindings only
-  python/automatica_core/     BACKEND, RustBackendUnavailable, assert_rust_backend()
+  python/aixyad_core/     BACKEND, RustBackendUnavailable, assert_rust_backend()
   tests/                      cargo tests over the golden corpus
 ```
 
-The root package stays on setuptools and depends on `automatica-core`, which ends the
+The root package stays on setuptools and depends on `aixyad-core`, which ends the
 "stdlib only" claim in `pyproject.toml`. `project_scanner` keeps its public signatures.
 Add `target/` to `.gitignore`. CI (`.github/workflows/ci.yml`, none yet) has a Rust job
 that runs `cargo fmt --check`, `cargo clippy --all-targets --features python -- -D warnings`

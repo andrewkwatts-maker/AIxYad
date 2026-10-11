@@ -66,7 +66,7 @@ def test_projects_returns_200():
         {'id': 1, 'name': 'Alpha', 'directory': '/tmp/alpha', 'created_at': '2026-01-01'},
     ]
 
-    with patch('automatica_db.init_global_db', return_value=_fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=_fake_conn):
         r = _client().get('/api/projects')
     assert r.status_code == 200
 
@@ -78,7 +78,7 @@ def test_projects_returns_list():
         {'id': 2, 'name': 'Beta',  'directory': '/tmp/beta',  'created_at': '2026-01-02'},
     ]
 
-    with patch('automatica_db.init_global_db', return_value=_fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=_fake_conn):
         r = _client().get('/api/projects')
     data = r.json()
     assert isinstance(data, list)
@@ -89,7 +89,7 @@ def test_projects_returns_list():
 # ── S1-W02 GET /api/projects/{id}/tasks ──────────────────────────────────────
 
 def test_tasks_returns_list_for_known_project(tmp_path):
-    import automatica_db as adb
+    import aixyad_db as adb
     import sqlite3
 
     # Pre-populate a project DB in the tmp dir with check_same_thread=False
@@ -103,7 +103,7 @@ def test_tasks_returns_list_for_known_project(tmp_path):
     global_conn = MagicMock()
     global_conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
 
-    with patch('automatica_db.init_global_db', return_value=global_conn):
+    with patch('aixyad_db.init_global_db', return_value=global_conn):
         r = _client().get('/api/projects/1/tasks')
 
     assert r.status_code == 200
@@ -117,7 +117,7 @@ def test_tasks_returns_404_for_unknown_project():
     global_conn = MagicMock()
     global_conn.execute.return_value.fetchone.return_value = None
 
-    with patch('automatica_db.init_global_db', return_value=global_conn):
+    with patch('aixyad_db.init_global_db', return_value=global_conn):
         r = _client().get('/api/projects/9999/tasks')
 
     assert r.status_code == 404
@@ -126,13 +126,13 @@ def test_tasks_returns_404_for_unknown_project():
 # ── S1-W03 POST /api/projects/{id}/tasks ─────────────────────────────────────
 
 def test_create_task_returns_success(tmp_path):
-    import automatica_db as adb
+    import aixyad_db as adb
 
     # Ensure project dir exists so init_project_db (called in handler) can open it
     global_conn = MagicMock()
     global_conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
 
-    with patch('automatica_db.init_global_db', return_value=global_conn):
+    with patch('aixyad_db.init_global_db', return_value=global_conn):
         r = _client().post('/api/projects/1/tasks', json={
             'title': 'New Task',
             'description': 'Details here',
@@ -150,7 +150,7 @@ def test_create_task_missing_project_returns_404():
     global_conn = MagicMock()
     global_conn.execute.return_value.fetchone.return_value = None
 
-    with patch('automatica_db.init_global_db', return_value=global_conn):
+    with patch('aixyad_db.init_global_db', return_value=global_conn):
         r = _client().post('/api/projects/9999/tasks', json={'title': 'X'})
 
     assert r.status_code == 404
@@ -163,7 +163,7 @@ def test_logs_returns_list(tmp_path):
     global_conn = MagicMock()
     global_conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
 
-    with patch('automatica_db.init_global_db', return_value=global_conn):
+    with patch('aixyad_db.init_global_db', return_value=global_conn):
         r = _client().get('/api/logs')
 
     assert r.status_code == 200
@@ -174,7 +174,7 @@ def test_logs_respects_limit_param(tmp_path):
     global_conn = MagicMock()
     global_conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
 
-    with patch('automatica_db.init_global_db', return_value=global_conn):
+    with patch('aixyad_db.init_global_db', return_value=global_conn):
         r = _client().get('/api/logs?limit=10')
 
     assert r.status_code == 200
@@ -184,7 +184,7 @@ def test_logs_with_project_id(tmp_path):
     global_conn = MagicMock()
     global_conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
 
-    with patch('automatica_db.init_global_db', return_value=global_conn):
+    with patch('aixyad_db.init_global_db', return_value=global_conn):
         r = _client().get('/api/logs?project_id=1')
 
     assert r.status_code == 200
@@ -201,7 +201,7 @@ def test_start_sprint_unknown_project():
     global_conn = MagicMock()
     global_conn.execute.return_value.fetchone.return_value = None
 
-    with patch('automatica_db.init_global_db', return_value=global_conn):
+    with patch('aixyad_db.init_global_db', return_value=global_conn):
         r = _client().post('/api/sprints/start', json={'project_id': 9999})
 
     assert r.status_code == 404
@@ -215,7 +215,7 @@ def test_start_sprint_returns_sprint_id(tmp_path):
     mock_runner = MagicMock()
     mock_runner_cls = MagicMock(return_value=mock_runner)
 
-    with patch('automatica_db.init_global_db', return_value=global_conn), \
+    with patch('aixyad_db.init_global_db', return_value=global_conn), \
          patch('sprint_runner.SprintRunner', mock_runner_cls):
         r = _client().post('/api/sprints/start', json={'project_id': 1})
 
@@ -231,7 +231,7 @@ def test_providers_returns_200():
     fake_conn = MagicMock()
     fake_conn.execute.return_value.fetchall.return_value = []
 
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().get('/api/providers')
 
     assert r.status_code == 200
@@ -256,7 +256,7 @@ def test_providers_returns_list():
         },
     ]
 
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().get('/api/providers')
 
     assert r.status_code == 200
@@ -272,7 +272,7 @@ def test_providers_returns_list():
 def test_list_agents_returns_200():
     fake_conn = MagicMock()
     fake_conn.execute.return_value.fetchall.return_value = []
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().get('/api/agents')
     assert r.status_code == 200
 
@@ -283,7 +283,7 @@ def test_list_agents_returns_list():
         {'slug': 'developer', 'role': 'Developer', 'description': 'Writes code',
          'created_at': '2026-01-01'},
     ]
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().get('/api/agents')
     data = r.json()
     assert isinstance(data, list)
@@ -294,7 +294,7 @@ def test_list_agents_returns_list():
 
 def test_create_agent_returns_success():
     fake_conn = MagicMock()
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().post('/api/agents', json={
             'slug': 'my-agent',
             'role': 'Developer',
@@ -320,7 +320,7 @@ def test_create_agent_invalid_slug_rejected():
 
 def test_delete_agent_returns_success():
     fake_conn = MagicMock()
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().delete('/api/agents/developer')
     assert r.status_code == 200
     assert r.json()['success'] is True
@@ -335,13 +335,13 @@ def test_list_sprints_no_project_returns_empty():
 
 
 def test_list_sprints_with_project_id(tmp_path):
-    import automatica_db as adb
+    import aixyad_db as adb
     pdb = adb.init_project_db(tmp_path)
     pdb.close()
 
     fake_conn = MagicMock()
     fake_conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().get('/api/sprints?project_id=1')
     assert r.status_code == 200
     assert isinstance(r.json(), list)
@@ -350,7 +350,7 @@ def test_list_sprints_with_project_id(tmp_path):
 def test_list_sprints_unknown_project_returns_404():
     fake_conn = MagicMock()
     fake_conn.execute.return_value.fetchone.return_value = None
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().get('/api/sprints?project_id=9999')
     assert r.status_code == 404
 
@@ -358,13 +358,13 @@ def test_list_sprints_unknown_project_returns_404():
 # ── B-23: POST /api/sprints ───────────────────────────────────────────────────
 
 def test_create_sprint_returns_success(tmp_path):
-    import automatica_db as adb
+    import aixyad_db as adb
     pdb = adb.init_project_db(tmp_path)
     pdb.close()
 
     fake_conn = MagicMock()
     fake_conn.execute.return_value.fetchone.return_value = {'directory': str(tmp_path)}
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().post('/api/sprints', json={
             'project_id': 1,
             'goal': 'Ship feature X',
@@ -378,7 +378,7 @@ def test_create_sprint_returns_success(tmp_path):
 def test_create_sprint_missing_project_returns_404():
     fake_conn = MagicMock()
     fake_conn.execute.return_value.fetchone.return_value = None
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().post('/api/sprints', json={'project_id': 9999, 'goal': ''})
     assert r.status_code == 404
 
@@ -386,7 +386,7 @@ def test_create_sprint_missing_project_returns_404():
 # ── B-23: PATCH /api/tasks/{id} ──────────────────────────────────────────────
 
 def test_update_task_returns_success(tmp_path):
-    import automatica_db as adb
+    import aixyad_db as adb
     pdb = adb.init_project_db(tmp_path)
     task = adb.create_task(pdb, title='Original Title')
     task_id = task['id']
@@ -396,7 +396,7 @@ def test_update_task_returns_success(tmp_path):
     fake_conn.execute.return_value.fetchall.return_value = [
         {'id': 1, 'directory': str(tmp_path)},
     ]
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().patch(f'/api/tasks/{task_id}', json={'title': 'Updated Title'})
     assert r.status_code == 200
     assert r.json()['success'] is True
@@ -405,7 +405,7 @@ def test_update_task_returns_success(tmp_path):
 def test_update_task_unknown_id_returns_404(tmp_path):
     fake_conn = MagicMock()
     fake_conn.execute.return_value.fetchall.return_value = []
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().patch('/api/tasks/9999', json={'title': 'X'})
     assert r.status_code == 404
 
@@ -413,7 +413,7 @@ def test_update_task_unknown_id_returns_404(tmp_path):
 # ── B-23: DELETE /api/tasks/{id} ─────────────────────────────────────────────
 
 def test_delete_task_returns_success(tmp_path):
-    import automatica_db as adb
+    import aixyad_db as adb
     pdb = adb.init_project_db(tmp_path)
     task = adb.create_task(pdb, title='To Delete')
     task_id = task['id']
@@ -423,7 +423,7 @@ def test_delete_task_returns_success(tmp_path):
     fake_conn.execute.return_value.fetchall.return_value = [
         {'id': 1, 'directory': str(tmp_path)},
     ]
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().delete(f'/api/tasks/{task_id}')
     assert r.status_code == 200
     assert r.json()['success'] is True
@@ -432,7 +432,7 @@ def test_delete_task_returns_success(tmp_path):
 def test_delete_task_unknown_id_returns_404(tmp_path):
     fake_conn = MagicMock()
     fake_conn.execute.return_value.fetchall.return_value = []
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().delete('/api/tasks/9999')
     assert r.status_code == 404
 
@@ -441,7 +441,7 @@ def test_delete_task_unknown_id_returns_404(tmp_path):
 
 def test_update_provider_returns_success():
     fake_conn = MagicMock()
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().patch('/api/providers/1', json={'name': 'NewName', 'enabled': 0})
     assert r.status_code == 200
     assert r.json()['success'] is True
@@ -451,7 +451,7 @@ def test_update_provider_returns_success():
 
 def test_delete_provider_returns_success():
     fake_conn = MagicMock()
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().delete('/api/providers/1')
     assert r.status_code == 200
     assert r.json()['success'] is True
@@ -510,7 +510,7 @@ def test_get_settings_reads_existing_file(tmp_path, monkeypatch):
 def test_health_returns_200():
     fake_conn = MagicMock()
     fake_conn.execute.return_value.fetchone.return_value = (1,)
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().get('/api/health')
     assert r.status_code == 200
 
@@ -518,7 +518,7 @@ def test_health_returns_200():
 def test_health_body_has_required_fields():
     fake_conn = MagicMock()
     fake_conn.execute.return_value.fetchone.return_value = (1,)
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().get('/api/health')
     body = r.json()
     for field in ('status', 'version', 'python', 'platform', 'db', 'uptime_s'):
@@ -528,14 +528,14 @@ def test_health_body_has_required_fields():
 def test_health_status_ok_when_db_healthy():
     fake_conn = MagicMock()
     fake_conn.execute.return_value.fetchone.return_value = (1,)
-    with patch('automatica_db.init_global_db', return_value=fake_conn):
+    with patch('aixyad_db.init_global_db', return_value=fake_conn):
         r = _client().get('/api/health')
     assert r.json()['status'] == 'ok'
     assert r.json()['db'] == 'ok'
 
 
 def test_health_status_degraded_when_db_fails():
-    with patch('automatica_db.init_global_db', side_effect=Exception('db error')):
+    with patch('aixyad_db.init_global_db', side_effect=Exception('db error')):
         r = _client().get('/api/health')
     assert r.status_code == 200
     assert r.json()['status'] == 'degraded'

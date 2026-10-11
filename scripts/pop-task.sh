@@ -1,5 +1,5 @@
 #!/bin/bash
-#====== Automatica/scripts/pop-task.sh ======
+#====== AIxYad/scripts/pop-task.sh ======
 # Extracts the next task from TODO.md into CURRENT_TASK.md
 # Cross-platform replacement for PopTask.bat
 # Usage: ./pop-task.sh [--peek]

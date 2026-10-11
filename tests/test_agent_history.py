@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-from automatica_db import (
+from aixyad_db import (
     init_project_db,
     create_task,
     create_sprint,

@@ -6,10 +6,12 @@ import sqlite3
 from pathlib import Path
 import sys
 
-PROJECT_DB = Path("H:/Github/Nova3D/.automatica/project.db")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from automatica_db import create_task, update_task
+import aixyad_paths
+from aixyad_db import create_task, update_task
+
+PROJECT_DB = aixyad_paths.project_state(Path("H:/Github/Nova3D")) / "project.db"
 
 DAMAGED_IDS = ["L0140-WC3-1", "L0143-WC3-4", "L0130-GEO-1",
                "L0146-WC3-7", "L0144-WC3-5"]

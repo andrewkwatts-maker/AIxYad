@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+import aixyad_paths
 from local_ai.gateway_config import BackendSpec, GatewaySpec, _parallel_slots, load_gateway
 from local_ai.jobs import JobManager
 from local_ai.llama_server import LlamaServer
@@ -32,8 +33,9 @@ from local_ai.proxy import forward, prepare_body
 from local_ai.scheduler import BackendUnavailable, Scheduler
 
 WEB_PAGE = Path(__file__).with_name("web") / "index.html"
+FAVICON_PAGE = Path(__file__).with_name("web") / "favicon.svg"
 _TOKEN_IN_URL = re.compile(r"([?&]token=)[^&\s\"]+")
-COOKIE = "automatica_token"
+COOKIE = "aixyad_token"
 MAX_BODY = 32 * 2**20
 
 
@@ -84,7 +86,7 @@ class Gateway:
     def __init__(self, spec: GatewaySpec, controller: Any = None, jobs: JobManager | None = None) -> None:
         self.spec = spec
         self.token = ensure_token(spec.token_file)
-        self.controller = controller or ServerController(spec.profiles, Path.home() / ".automatica" / "servers")
+        self.controller = controller or ServerController(spec.profiles, aixyad_paths.home() / "servers")
         self.scheduler = Scheduler(list(spec.backends.values()), self.controller,
                                    max_hold_s=spec.max_hold_s, idle_unload_s=spec.idle_unload_s)
         host, port = spec.listen[0]
@@ -140,7 +142,7 @@ class Gateway:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AutomaticaGateway/1"
+    server_version = "AIxYadGateway/1"
     gateway: Gateway  # set on the subclass made by serve()
 
     # -- plumbing ------------------------------------------------------------
@@ -185,6 +187,8 @@ class Handler(BaseHTTPRequestHandler):
         gw = self.gateway
         if method == "GET" and path == "/health":
             return self._json(200, {"status": "ok"})
+        if method == "GET" and path == "/favicon.svg":
+            return self._favicon()
         if method == "GET" and path == "/ui" and "token" in query:
             if not hmac.compare_digest(query["token"][0].encode(), gw.token.encode()):
                 return self._error(401, "wrong token")
@@ -216,6 +220,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _favicon(self) -> None:
+        data = FAVICON_PAGE.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400")
         self.end_headers()
         self.wfile.write(data)
 
@@ -276,7 +289,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(code)
             for key, value in headers:
                 self.send_header(key, value)
-            self.send_header("X-Automatica-Backend", backend.name)
+            self.send_header("X-AIxYad-Backend", backend.name)
             self.end_headers()
 
         def send_chunk(chunk: bytes) -> None:

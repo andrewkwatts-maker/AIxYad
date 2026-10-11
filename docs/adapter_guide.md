@@ -1,4 +1,4 @@
-# Automatica Adapter Guide
+# AIxYad Adapter Guide
 
 Adapters are the bridge between the sprint runner and AI providers. Each adapter type maps to a different HTTP API protocol.
 

@@ -1,0 +1,52 @@
+# Build and publish the aixyad package to PyPI with trusted publishing (OpenID Connect):
+# no API token is stored anywhere. PyPI's publisher for project "AIxYad" trusts this file
+# (.github/workflows/workflow.yml) in andrewkwatts-maker/AIxYad, environment "pypi".
+#
+# Publishing happens when a GitHub release is published (bump `version` in pyproject.toml
+# first; PyPI never accepts the same version twice), or by hand from the Actions tab.
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test the local AI package
+        run: |
+          python -m pip install --upgrade pip pytest pyyaml
+          python -m pytest tests/test_local_ai.py -q -p no:cacheprovider
+      - name: Build the wheel and source archive
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/AIxYad
+    permissions:
+      id-token: write   # lets PyPI verify this workflow; nothing else is granted
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

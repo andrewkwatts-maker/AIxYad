@@ -1,8 +1,35 @@
-Copyright (c) 2025 Andrew Keith Watts. All rights reserved.
+AIxYad (AI × יד)
+Copyright (c) 2025-2026 Andrew Keith Watts. All rights reserved.
 
-This software and associated documentation files (the "Software") are
-proprietary and confidential. Unauthorized copying, distribution, modification,
-sublicensing, or use of this Software, via any medium, is strictly prohibited
-without the express prior written permission of the copyright holder.
+SOURCE-AVAILABLE LICENSE
 
-For licensing inquiries, contact: AndrewKWatts@Gmail.com
+This software and its documentation (the "Software") are published so that
+anyone can read the source code and use the Software for themselves. The
+Software is not open source.
+
+You may:
+  1. view and read the source code;
+  2. download and install the Software, including from PyPI or GitHub, and run
+     it for your own personal, non-commercial use.
+
+You may not, without the copyright holder's prior written permission:
+  1. modify the Software or create derivative works based on it;
+  2. copy, publish, distribute, sublicense, sell, or otherwise make the
+     Software or any part of it available to others, except by linking to the
+     official repository or package;
+  3. use the Software, or any part of it, in or for a commercial product or
+     service.
+
+Nothing in this license limits the rights that GitHub's Terms of Service give
+other GitHub users to view and fork this repository on GitHub.
+
+All rights not expressly granted here are reserved by the copyright holder.
+For other uses, contact the copyright holder: AndrewKWatts@Gmail.com.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
